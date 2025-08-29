@@ -1,20 +1,50 @@
 server:
-  port: 8080
+  port: 8012
   servlet:
-    context-path: /identity
+    context-path: /vdi_mobifone
 
 spring:
   datasource:
-    url: ${DBMS_CONNECTION:jdbc:mysql://localhost:3306/identity_service}
-    driverClassName: "com.mysql.cj.jdbc.Driver"
-    password: ${DBMS_PASSWORD:root}
-    username: ${DBMS_USERNAME:root}
+#    url: ${DBMS_CONNECTION:jdbc:mysql://localhost:3306/identity_service}
+#    driverClassName: "com.mysql.cj.jdbc.Driver"
+#    password: ${DBMS_PASSWORD:root}
+#    username: ${DBMS_USERNAME:root}
+    url: "jdbc:mariadb://42.1.124.232:3307/vdi_mobifone"  # Đổi URL sang MariaDB
+    username: root
+    password: 6kls1eRr8EBW
+    driver-class-name: org.mariadb.jdbc.Driver
   jpa:
     hibernate:
       ddl-auto: update
     show-sql: true
+  rabbitmq:
+    host: 42.1.124.107
+    port: 5672
+    username: admin
+    password: admin123
+    virtual-host: /
+
+infra:
+  rabbitmq:
+    host: 10.6.60.154
+    port: 5672
+    username: hoanganh
+    password: hoanganh
+    virtual-host: /
+
+ansible:
+  timeout-minutes: 30
+  max-retries: 1
+  retry-backoff-ms: 10000
+  remote:
+    host: 192.168.220.133
+    user: root
+    jobs-dir: /ansible-host/jobs
+    logs-dir: /ansible-host/logs
+    roles-dir: /ansible-host/roles
+
 
 jwt:
   signerKey: "1TjXchw5FloESb63Kc+DFhTARvpWL4jUGCwfGWxuG5SIf/1y/LgJxHnMqaF6A/ij"
-  valid-duration: 3600 # in second
+  valid-duration: 7200 # in second
   refreshable-duration: 36000 # in seconds

@@ -1,0 +1,13 @@
+services:
+  vdi_mobifone:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: luantong/vdi_mobifone:0.0.1
+    container_name: vdi_mobifone
+    ports:
+      - 8012:8012
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mariadb://mariadb-node1:3307/vdi_mobifone
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=6kls1eRr8EBW
