@@ -41,15 +41,15 @@ public class VirtualDesktopRequest {
 
     @NotNull
     @NotEmpty
-    String CPU;
+    String cpu;
 
     @NotNull
     @NotEmpty
-    String GPU;
+    String gpu;
 
     @NotNull
     @NotEmpty
-    String RAM;
+    String ram;
 
     @NotNull
     VolumeType volumeType;

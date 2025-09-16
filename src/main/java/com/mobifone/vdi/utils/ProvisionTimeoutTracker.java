@@ -19,7 +19,7 @@ public class ProvisionTimeoutTracker {
     private final Map<String, DeadlineInfo> deadlines = new ConcurrentHashMap<>();
 
     public void register(String taskId, int count) {
-        Instant dl = Instant.now().plusSeconds(count * 120L); // 2 phút / instance
+        Instant dl = Instant.now().plusSeconds(count * 360L); // 6 phút / instance
         deadlines.put(taskId, new DeadlineInfo(dl, count));
     }
 

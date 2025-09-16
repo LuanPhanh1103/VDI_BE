@@ -31,7 +31,7 @@ public class AppDefinitionService {
     @PreAuthorize("hasRole('create_app')")
     public AppDefinitionResponse create(AppDefinitionRequest request) {
         if (repo.existsByCode(request.getCode())) {
-            throw new AppException(ErrorCode.PERMISSION_EXITED); // hoặc tạo ErrorCode riêng: APP_EXISTS
+            throw new AppException(ErrorCode.APP_DEPLOYMENT_EXISTED); // hoặc tạo ErrorCode riêng: APP_EXISTS
         }
         AppDefinition entity = mapper.toEntity(request);
         entity = repo.save(entity);

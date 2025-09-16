@@ -13,6 +13,8 @@ import java.util.Optional;
 public interface AppDefinitionRepository extends JpaRepository<AppDefinition, String> {
     boolean existsByCode(String code);
 
+    Optional<AppDefinition> findByCode(String code);
+
     Page<AppDefinition> findByCodeContainingIgnoreCaseOrNameContainingIgnoreCase(
             String codeKw, String nameKw, Pageable pageable);
 

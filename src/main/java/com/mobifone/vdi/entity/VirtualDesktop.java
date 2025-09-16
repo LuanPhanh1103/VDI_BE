@@ -28,9 +28,10 @@ public class VirtualDesktop extends AbstractAuditingEntity<String> implements Se
     String name;
     String portLocal;
     String portPublic;
-    String CPU;
-    String GPU;
-    String RAM;
+    String portWinRmPublic;
+    String cpu;
+    String gpu;
+    String ram;
     String idInstance;
     String typeVirtualDesktop;
 
@@ -41,6 +42,13 @@ public class VirtualDesktop extends AbstractAuditingEntity<String> implements Se
 
     @Enumerated(EnumType.STRING)
     HasGPU hasGPU;
+
+    String status;                 // CREATED|NAT_ERROR|APP_ERROR|READY
+    Boolean winRmDisabled;
+    String jobId;
+
+    @Lob
+    String ansiblePlan;
 
     @ManyToOne
     @JoinColumn(name = "project_id")

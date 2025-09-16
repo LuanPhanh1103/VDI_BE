@@ -24,19 +24,27 @@ public class RemoteController {
     RdpFileService rdpFileService;
 
     @LogApi
-    @GetMapping("/downloadRdp")
-    public ResponseEntity<ByteArrayResource> downloadRdpFile(
+    @GetMapping(
+            value = "/downloadRdp",
+            produces = "application/x-rdp; charset=UTF-8"
+    )
+    public ResponseEntity<byte[]> downloadRdpFile(
             @RequestParam String ipAddress,
             @RequestParam String username,
+            @RequestParam int port,
             @RequestParam(required = false, defaultValue = "connection.rdp") String fileName) {
 
-        byte[] data = rdpFileService.generateRdpFileContent(ipAddress, username);
-        ByteArrayResource resource = new ByteArrayResource(data);
+        // Bảo đảm có đuôi .rdp
+        String safeName = fileName.endsWith(".rdp") ? fileName : fileName + ".rdp";
+
+        byte[] data = rdpFileService.generateRdpFileContent(ipAddress, username, port);
 
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + fileName + "\"")
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + safeName + "\"")
                 .contentLength(data.length)
                 .contentType(MediaType.parseMediaType("application/x-rdp; charset=UTF-8"))
-                .body(resource);
+                .body(data);
     }
+
+
 }

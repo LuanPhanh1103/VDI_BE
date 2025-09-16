@@ -19,9 +19,9 @@ public class VirtualDesktopResponse {
     HasGPU hasGPU;          // cứng
     String portLocal;
     String portPublic;      // cứng
-    String CPU;             // cứng
-    String GPU;             // cứng
-    String RAM;             // cứng
+    String cpu;             // cứng
+    String gpu;             // cứng
+    String ram;             // cứng
     VolumeType volumeType;
     String volumeSize;
     String idInstance;

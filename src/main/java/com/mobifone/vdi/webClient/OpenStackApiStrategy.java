@@ -112,19 +112,25 @@ public class OpenStackApiStrategy implements ApiStrategy {
         {
           "auth": {
             "identity": {
-              "methods": ["password"],
+              "methods": [
+                "password"
+              ],
               "password": {
                 "user": {
-                  "name": "user01",
-                  "password": "hoanganh",
-                  "domain": { "name": "Default" }
+                  "name": "bucloud",
+                  "password": "bucloud@123",
+                  "domain": {
+                    "name": "Default"
+                  }
                 }
               }
             },
             "scope": {
               "project": {
-                "name": "normal-project-01",
-                "domain": { "name": "Default" }
+                "name": "Private.BUCLOUD.Test",
+                "domain": {
+                  "name": "Default"
+                }
               }
             }
           }

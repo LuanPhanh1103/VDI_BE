@@ -2,12 +2,16 @@
 package com.mobifone.vdi.dto.response;
 
 import com.mobifone.vdi.entity.enumeration.ActionType;
+import com.mobifone.vdi.entity.enumeration.RunType;
 import lombok.*;
 import lombok.experimental.FieldDefaults;
 
 import java.util.List;
 
-@Data @NoArgsConstructor @AllArgsConstructor @Builder
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class AppDefinitionResponse {
     String id;
@@ -16,6 +20,14 @@ public class AppDefinitionResponse {
     ActionType actionType;
     List<String> winVersion;
     List<String> linuxVersion;
-    List<String> extraVars;
+
+    // ✅ giữ lại Map
+    List<String> requiredVars;
+
     Boolean enabled;
+
+    // ✅ giữ 2 trường này
+    RunType runType;     // ROLE|PLAYBOOK
+    String roleName;     // nếu ROLE
+    String playbookPath; // nếu PLAYBOOK
 }

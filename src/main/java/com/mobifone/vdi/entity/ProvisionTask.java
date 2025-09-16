@@ -16,7 +16,7 @@ import java.io.Serializable;
 @AllArgsConstructor
 @FieldDefaults(level = AccessLevel.PRIVATE)
 @Entity
-public class ProvisionTask extends AbstractAuditingEntity<String> implements Serializable {
+    public class ProvisionTask extends AbstractAuditingEntity<String> implements Serializable {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     String id;
@@ -25,7 +25,7 @@ public class ProvisionTask extends AbstractAuditingEntity<String> implements Ser
     String taskId;                                      // UUID string
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 16)
+    @Column(name = "status", length = 32, nullable = false)
     TaskStatus status;                                  // PROVISIONING | SUCCESS | FAILED
 
     @Column(columnDefinition = "TEXT")

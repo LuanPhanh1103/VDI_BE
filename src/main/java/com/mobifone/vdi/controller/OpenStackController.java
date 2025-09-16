@@ -20,76 +20,94 @@ import java.util.List;
 @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 @Slf4j
 public class OpenStackController {
+
     OpenStackService openStackService;
 
     @GetMapping("/images")
-    ApiResponse<List<ImagesResponse>> images() {
+    ApiResponse<List<ImagesResponse>> images(
+            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
         return ApiResponse.<List<ImagesResponse>>builder()
-                .result(openStackService.getImagesAsPermissions())
+                .result(openStackService.getImagesAsPermissions(region))
                 .build();
     }
-
 
     @GetMapping("/flavors")
     public ApiResponse<PagedResponse<FlavorsResponse>> flavors(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int limit
-    ) {
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
         return ApiResponse.<PagedResponse<FlavorsResponse>>builder()
-                .result(openStackService.getFlavorsAsPermissions(page, limit))
+                .result(openStackService.getFlavorsAsPermissions(page, limit, region))
                 .build();
     }
 
-    // ========================= Provision APIs =========================
-    // PERSONAL: luôn tạo 1 máy
+    // PERSONAL
     @LogApi
     @PostMapping("/instance/personal")
     public ApiResponse<InstanceResponse> provisionPersonal(
-            @RequestParam(name = "user_id") String userId,
-            @RequestBody InstanceRequest request
-    ) {
+            @RequestParam(name="user_id") String userId,
+            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestBody InstanceRequest request) {
         return ApiResponse.<InstanceResponse>builder()
-                .result(openStackService.provisionPersonal(request, userId))
+                .result(openStackService.provisionPersonal(request, userId, region))
                 .build();
     }
 
-    // ORGANIZATION: giới hạn 1 máy
+    // ORGANIZATION
     @LogApi
     @PostMapping("/instance/organization")
     public ApiResponse<InstanceResponse> provisionOrganization(
-            @RequestParam(name = "user_id") String userId,
-            @RequestBody InstanceRequest request
-    ) {
+            @RequestParam(name="user_id") String userId,
+            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestBody InstanceRequest request) {
         return ApiResponse.<InstanceResponse>builder()
-                .result(openStackService.provisionOrganization(request, userId))
+                .result(openStackService.provisionOrganization(request, userId, region))
                 .build();
     }
 
-    // ADD_RESOURCE: có thể tạo nhiều máy
+    // ADD_RESOURCE
     @LogApi
     @PostMapping("/instance/add-resource")
     public ApiResponse<InstanceResponse> addResource(
-            @RequestParam(name = "user_id") String userId,
-            @RequestBody InstanceRequest request
-    ) {
+            @RequestParam(name="user_id") String userId,
+            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestBody InstanceRequest request) {
         return ApiResponse.<InstanceResponse>builder()
-                .result(openStackService.addResource(request, userId))
+                .result(openStackService.addResource(request, userId, region))
                 .build();
     }
 
-//    @LogApi
-//    @PostMapping("/instance")
-//    ApiResponse<InstanceResponse> instance(@RequestBody InstanceRequest request) {
-//        return ApiResponse.<InstanceResponse>builder()
-//                .result(openStackService.provisionPersonal(request))
-//                .build();
-//    }
+    // DELETE
+    @DeleteMapping("/{idInstance}")
+    public ApiResponse<InstanceResponse> deleteInstance(
+            @PathVariable String idInstance,
+            @RequestParam("user_id") String userId,
+            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
+        InstanceResponse res = openStackService.requestDeleteInstance(idInstance, userId, region);
+        return ApiResponse.<InstanceResponse>builder().result(res).build();
+    }
 
+    // noVNC
     @LogApi
     @GetMapping("/noVNC")
-    ApiResponse<NoVNCResponse> noVNC(@RequestBody NoVNCRequest request) {
+    ApiResponse<NoVNCResponse> noVNC(
+            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestBody NoVNCRequest request) {
         return ApiResponse.<NoVNCResponse>builder()
-                .result(openStackService.getConsoleUrl(request))
+                .result(openStackService.getConsoleUrl(request, region))
+                .build();
+    }
+
+    // Volumes
+    @LogApi
+    @GetMapping("/volumes")
+    public ApiResponse<PagedResponse<VolumeSummary>> listVolumes(
+            @RequestParam("project_id") String projectId,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
+        return ApiResponse.<PagedResponse<VolumeSummary>>builder()
+                .result(openStackService.getVolumesAsPermissions(projectId, page, limit, region))
                 .build();
     }
 }

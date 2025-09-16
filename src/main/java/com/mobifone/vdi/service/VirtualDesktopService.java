@@ -265,4 +265,12 @@ public class VirtualDesktopService {
         vd.setIsDeleted(1L);
         virtualDesktopRepository.save(vd);
     }
+
+    public void deleteVirtualDesktopByIdInstance(String id) {
+        VirtualDesktop vd = virtualDesktopRepository.findByIdInstance(id)
+                .orElseThrow(() -> new AppException(ErrorCode.VIRTUAL_DESKTOP_NOT_EXITED));
+        vd.setIsDeleted(1L);
+        virtualDesktopRepository.save(vd);
+    }
+
 }

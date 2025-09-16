@@ -26,8 +26,8 @@ spring:
 
 infra:
   rabbitmq:
-    host: 10.6.60.154
-    port: 5672
+    host: 42.1.75.51
+    port: 443
     username: hoanganh
     password: hoanganh
     virtual-host: /
@@ -37,12 +37,18 @@ ansible:
   max-retries: 1
   retry-backoff-ms: 10000
   remote:
-    host: 192.168.220.133
+    host: 42.1.124.196
+    port: 2223
     user: root
     jobs-dir: /ansible-host/jobs
     logs-dir: /ansible-host/logs
-    roles-dir: /ansible-host/roles
+    roles-dir: /ansible-host/window/roles
+  pfsense:
+    inventory: /ansible-host/pfsense2.8/pfsense.ini
 
+provision:
+  infra-timeout-minutes: 10
+  infra-timeout-grace-seconds: 30
 
 jwt:
   signerKey: "1TjXchw5FloESb63Kc+DFhTARvpWL4jUGCwfGWxuG5SIf/1y/LgJxHnMqaF6A/ij"

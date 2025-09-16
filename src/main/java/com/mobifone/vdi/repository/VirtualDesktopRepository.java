@@ -13,6 +13,7 @@ import org.springframework.stereotype.Repository;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface VirtualDesktopRepository extends JpaRepository<VirtualDesktop, String> {
@@ -21,6 +22,12 @@ public interface VirtualDesktopRepository extends JpaRepository<VirtualDesktop, 
     List<VirtualDesktop> findAllByProject_Id(String projectId);
     List<VirtualDesktop> findAllByProject_Owner_Id(String ownerId);
     List<VirtualDesktop> findAllByProject_IdAndUser_Id(String projectId, String userId);
+
+    Optional<VirtualDesktop> findByIdInstance(String s);
+
+    boolean existsByPortPublic(String portPublic);
+    List<VirtualDesktop> findByJobId(String jobId);
+
 
     // ADMIN: tất cả VDI (+ optional projectId, search)
     @EntityGraph(attributePaths = {"project", "user"})

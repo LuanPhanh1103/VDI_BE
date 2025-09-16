@@ -2,6 +2,7 @@ package com.mobifone.vdi.service;
 
 import com.mobifone.vdi.dto.request.AnsibleJobMessageRequest;
 import com.mobifone.vdi.entity.AnsibleJob;
+import com.mobifone.vdi.entity.AppDefinition;
 import com.mobifone.vdi.exception.AppException;
 import com.mobifone.vdi.exception.ErrorCode;
 import com.mobifone.vdi.repository.AnsibleJobRepository;
@@ -52,7 +53,7 @@ public class AnsibleRunnerService {
     protected long retryBackoffMs;
 
     @NonFinal
-    @Value("${ansible.remote.host:192.168.220.133}")
+    @Value("${ansible.remote.host:42.1.124.196}")
     protected String remoteHost;
 
     @NonFinal
@@ -68,8 +69,228 @@ public class AnsibleRunnerService {
     protected String remoteLogsDir;
 
     @NonFinal
-    @Value("${ansible.remote.roles-dir:/ansible-host/roles}")
+    @Value("${ansible.remote.roles-dir:/ansible-host/window/roles}")
     protected String remoteRolesDir;
+
+    @NonFinal
+    @Value("${ansible.remote.port:2223}")
+    protected int remotePort;
+
+    // ✅ THÊM: inventory pfSense đúng chỗ bạn đang để
+    @NonFinal @Value("${ansible.pfsense.inventory:/ansible-host/pfsense2.8/pfsense.ini}")
+    protected String pfsenseInventory;
+
+    // ✅ THÊM: tuỳ chọn ssh để không bị hỏi host key + không lưu known_hosts
+    private static final String SSH_OPTS = "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null";
+
+    /** NAT forward: dùng đúng inventory pfSense + đảm bảo mkdir logs trước khi ghi */
+    public boolean runNatCreate(String jobId, String wanIp, int destPort, String localIp, int localPort) {
+        String logFile = remoteLogsDir + "/" + jobId + "_nat.log";
+        String cmd = String.format(
+                "ssh %s -p %d %s@%s \"mkdir -p %s; " +
+                        "echo '===== NAT START =====' >> %s; " +
+                        "{ ansible-playbook /ansible-host/pfsense2.8/create_nat.yml -i %s " +
+                        "-e \\\"wan_ip=%s destination_port=%d target=%s localip=%s local_port=%d\\\" >> %s 2>&1; rc=$?; } ; " +
+                        "echo '===== NAT END (exit='$rc') =====' >> %s; exit $rc\"",
+                SSH_OPTS, remotePort, remoteUser, remoteHost, remoteLogsDir,
+                logFile,
+                pfsenseInventory,
+                wanIp, destPort, localIp, localIp, localPort,
+                logFile, logFile
+        );
+        return execAndWait(jobId, cmd, logFile);
+    }
+
+    // ✅ THÊM: NAT delete (delete-nat.yml -e "wan_ip=... port=...")
+    public boolean runNatDelete(String jobId, String wanIp, int destPort) {
+        String logFile = remoteLogsDir + "/" + jobId + "_nat_delete.log";
+        String cmd = String.format(
+                "ssh %s -p %d %s@%s \"mkdir -p %s; " +
+                        "echo '===== NAT DELETE START =====' >> %s; " +
+                        "{ ansible-playbook /ansible-host/pfsense2.8/delete-nat.yml -i %s " +
+                        "-e \\\"wan_ip=%s port=%d\\\" >> %s 2>&1; rc=$?; } ; " +
+                        "echo '===== NAT DELETE END (exit='$rc') =====' >> %s; exit $rc\"",
+                SSH_OPTS, remotePort, remoteUser, remoteHost, remoteLogsDir,
+                logFile,
+                pfsenseInventory,
+                wanIp, destPort,
+                logFile, logFile
+        );
+        return execAndWait(jobId, cmd, logFile);
+    }
+
+    /** Assign interface cho ORGANIZATION: dùng đúng inventory pfSense + mkdir logs */
+    public boolean runAssignInterface(String jobId, String assignName, String assignType, String assignDescr,
+                                      String assignIp, int assignMask) {
+        String logFile = remoteLogsDir + "/" + jobId + "_assign_interface.log";
+        String cmd = String.format(
+                "ssh %s -p %d %s@%s \"mkdir -p %s; " +
+                        "echo '===== ASSIGN START =====' >> %s; " +
+                        "{ ansible-playbook /ansible-host/pfsense2.8/enable-assign-interface.yml -i %s " +
+                        "-e \\\"assign_name=%s assign_type=%s assign_descr=%s assign_ip=%s assign_mask=%d\\\" >> %s 2>&1; rc=$?; } ; " +
+                        "echo '===== ASSIGN END (exit='$rc') =====' >> %s; exit $rc\"",
+                SSH_OPTS, remotePort, remoteUser, remoteHost, remoteLogsDir,
+                logFile,
+                pfsenseInventory,
+                assignName, assignType, assignDescr, assignIp, assignMask,
+                logFile, logFile
+        );
+
+        return execAndWait(jobId, cmd, logFile);
+    }
+
+
+    public boolean runWinRmDisable(String jobId, String ip, String port, String user, String pass, String winVersion) {
+        String logFile = remoteLogsDir + "/" + jobId + "_winrm_disable.log";
+
+        // inventory sử dụng ipPublic & portWinrmPublic
+        String inv = "[windows]\n" + ip + "\n\n[windows:vars]\n" +
+                "ansible_user=" + user + "\n" +
+                "ansible_password=" + pass + "\n" +
+                "ansible_port=" + port + "\n" +
+                "ansible_connection=winrm\n" +
+                "ansible_winrm_scheme=http\n" +
+                "ansible_winrm_transport=basic\n" +
+                "ansible_winrm_server_cert_validation=ignore\n";
+        String invPath = remoteJobsDir + "/inventory_" + jobId + "_disable.ini";
+        try { writeRemoteFile(invPath, inv); } catch (Exception e) { return false; }
+
+        String pbPath = remoteJobsDir + "/playbook_" + jobId + "_winrm_disable.yml";
+        String play =
+                "- hosts: windows\n" +
+                        "  gather_facts: yes\n" +
+                        "  roles:\n" +
+                        "    - role: winrm_disable\n" +
+                        "      win_version: " + yamlScalar(winVersion) + "\n" +
+                        "      winrm_action: remove\n";
+        try { writeRemoteFile(pbPath, play); } catch (Exception e) { return false; }
+
+        String cmd = String.format(
+                "ssh %s -p %d %s@%s \"export ANSIBLE_ROLES_PATH='%s'; " +
+                        "echo '===== WINRM DISABLE START =====' >> %s; " +
+                        "{ ansible-playbook -i %s %s >> %s 2>&1; rc=$?; } ; " +
+                        "echo '===== WINRM DISABLE END (exit='$rc') =====' >> %s; exit $rc\"",
+                SSH_OPTS, remotePort, remoteUser, remoteHost, remoteRolesDir,
+                logFile,
+                invPath, pbPath, logFile,
+                logFile
+        );
+        return execAndWait(jobId, cmd, logFile);
+    }
+
+    // === Helper: render giá trị an toàn cho YAML ===
+    private String yamlScalar(Object v) {
+        if (v == null) return "''";                // chuỗi rỗng
+        if (v instanceof Number || v instanceof Boolean) {
+            return String.valueOf(v);              // số/boolean: giữ nguyên
+        }
+        // List/Map: serialize JSON rồi quote lại (tránh phải tự vẽ YAML phức tạp)
+        if (v instanceof java.util.Collection || v instanceof java.util.Map) {
+            try {
+                String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(v);
+                return "'" + json.replace("'", "''") + "'";
+            } catch (Exception ignore) {
+                String s = String.valueOf(v).replace("'", "''");
+                return "'" + s + "'";
+            }
+        }
+        // Mặc định: string – quote + escape single quote
+        String s = String.valueOf(v).replace("'", "''");
+        return "'" + s + "'";
+    }
+
+
+
+    /** Cài 1 app theo AppDefinition (role) */
+    public boolean runPlanForApp(String subJobId, AppDefinition def,
+                                 String ip, int port, String user, String pass,
+                                 Map<String, Object> vars) {
+        log.info("ippppppppppppppp: {}", ip);
+        log.info("porttttttttttttt: {}", port);
+
+        String logFile = remoteLogsDir + "/" + subJobId + ".log";
+
+        // 1) Tạo inventory tạm (trỏ tới ipPublic + NAT WinRM port)
+        String inv = "[windows]\n" + ip + "\n\n[windows:vars]\n" +
+                "ansible_user=" + user + "\n" +
+                "ansible_password=" + pass + "\n" +
+                "ansible_port=" + port + "\n" +
+                "ansible_connection=winrm\n" +
+                "ansible_winrm_scheme=http\n" +
+                "ansible_winrm_transport=basic\n" +
+                "ansible_winrm_server_cert_validation=ignore\n";
+        String invPath = remoteJobsDir + "/inventory_" + subJobId + ".ini";
+        try { writeRemoteFile(invPath, inv); } catch (Exception e) { return false; }
+
+        // 2) Playbook gọi role theo AppDefinition
+        StringBuilder rolesYaml = new StringBuilder();
+        rolesYaml.append("  - role: ").append(def.getCode()).append("\n");
+        if (vars != null) {
+            for (Map.Entry<String,Object> e : vars.entrySet()) {
+                rolesYaml.append("    ")
+                        .append(e.getKey())
+                        .append(": ")
+                        .append(yamlScalar(e.getValue()))
+                        .append("\n");
+            }
+        }
+
+        String play =
+                "- hosts: windows\n" +
+                        "  gather_facts: yes\n" +
+                        "  roles:\n" + rolesYaml;
+
+        String pbPath = remoteJobsDir + "/playbook_" + subJobId + ".yml";
+        try { writeRemoteFile(pbPath, play); } catch (Exception e) { return false; }
+
+        // 3) SSH VÀO ANSIBLE HOST (đúng port) + export ROLES_PATH + chạy ansible-playbook
+        String cmd = String.format(
+                "ssh %s -p %d %s@%s \"mkdir -p %s; " +                       // đảm bảo thư mục logs có sẵn
+                        "export ANSIBLE_ROLES_PATH='%s'; " +
+                        "echo '===== APP %s START =====' >> %s; " +
+                        "{ ansible-playbook -i %s %s >> %s 2>&1; rc=$?; } ; " +
+                        "echo '===== APP %s END (exit='$rc') =====' >> %s; exit $rc\"",
+                SSH_OPTS, remotePort, remoteUser, remoteHost, remoteLogsDir,
+                remoteRolesDir,
+                def.getCode(), logFile,
+                invPath, pbPath, logFile,
+                def.getCode(), logFile
+        );
+
+        return execAndWait(subJobId, cmd, logFile);
+    }
+
+
+    /** Hàm dùng chung chạy SSH + chờ */
+    private boolean execAndWait(String jobId, String command, String logFile) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(detectShell(), detectShellFlag(), command);
+            Process p = pb.start();
+            RUNNING.put(jobId, p);
+
+            boolean finished = p.waitFor(timeoutMinutes, TimeUnit.MINUTES);
+            if (!finished) {
+                log.warn("SSH command timeout for job {}", jobId);
+                try { p.destroyForcibly(); } catch (Exception ignored) {}
+                RUNNING.remove(jobId);
+                return false;
+            }
+
+            int exit = p.exitValue();
+            RUNNING.remove(jobId);
+
+            if (exit != 0) {
+                log.error("SSH command exit={} for job {}. Check remote log: {}", exit, jobId, logFile);
+            }
+            return exit == 0;
+        } catch (Exception e) {
+            log.error("SSH execution error", e);
+            return false;
+        }
+    }
+
+
+
 
     // ===================== PUBLIC API =====================
 
@@ -176,8 +397,8 @@ public class AnsibleRunnerService {
             if (path == null || path.isEmpty()) throw new AppException(ErrorCode.LOG_FILE_PATH);
 
             String command = String.format(
-                    "ssh -o StrictHostKeyChecking=no %s@%s cat %s",
-                    remoteUser, remoteHost, path
+                    "ssh %s -p %d %s@%s cat %s",
+                    SSH_OPTS, remotePort, remoteUser, remoteHost, path
             );
             ProcessBuilder pb = new ProcessBuilder(detectShell(), detectShellFlag(), command);
             Process process = pb.start();
@@ -225,7 +446,7 @@ public class AnsibleRunnerService {
                 for (String ip : req.getTargetIps()) inventory.append(ip).append("\n");
                 inventory.append("\n[windows:vars]\n")
                         .append("ansible_user=").append(ansibleUser).append("\n")
-                        .append("ansible_password=Mbf@phanh2025#\n") // TODO: move to secure config/secret
+                        .append("ansible_password=Mbf@2468#13579\n") // TODO: move to secure config/secret
                         .append("ansible_port=").append(ansiblePort).append("\n")
                         .append("ansible_connection=winrm\n")
                         .append("ansible_winrm_transport=basic\n")
@@ -233,16 +454,28 @@ public class AnsibleRunnerService {
 
         // 2) Playbook – nhúng extraVars vào block role
         Map<String, Object> extraVars = Optional.ofNullable(req.getExtraVars()).orElse(new HashMap<>());
+
         String rolesYaml = req.getApps().stream()
                 .map(app -> {
-                    StringBuilder b = new StringBuilder("  - role: " + app + "\n");
-                    b.append("    win_version: ").append(req.getWinVersion()).append("\n");
+                    StringBuilder b = new StringBuilder();
+                    b.append("  - role: ").append(app).append("\n");
+
+                    // win_version: CHỈ thêm nếu có, và QUOTE
+                    if (req.getWinVersion() != null && !String.valueOf(req.getWinVersion()).isBlank()) {
+                        b.append("    win_version: ").append(yamlScalar(req.getWinVersion())).append("\n");
+                    }
+
                     for (Map.Entry<String, Object> e : extraVars.entrySet()) {
-                        b.append("    ").append(e.getKey()).append(": ").append(e.getValue()).append("\n");
+                        b.append("    ")
+                                .append(e.getKey())
+                                .append(": ")
+                                .append(yamlScalar(e.getValue()))
+                                .append("\n");
                     }
                     return b.toString();
                 })
-                .collect(Collectors.joining("\n"));
+                .collect(java.util.stream.Collectors.joining("\n"));
+
 
         String playbook =
                 "- hosts: windows\n" +
@@ -256,21 +489,25 @@ public class AnsibleRunnerService {
 
         // 4) Tạo thư mục từ xa (jobs/logs/pids)
         execLocal(String.format(
-                "ssh %1$s@%2$s \"mkdir -p %3$s %4$s /ansible-host/pids\"",
-                remoteUser, remoteHost, remoteJobsDir, remoteLogsDir
+                "ssh %s -p %d %s@%s \"mkdir -p %s %s /ansible-host/pids\"",
+                SSH_OPTS, remotePort, remoteUser, remoteHost, remoteJobsDir, remoteLogsDir
         ));
 
         // 5) Chạy ansible-playbook, export ROLES_PATH & ghi ssh pid, APPEND log + marker END
         String command = String.format(
-                "ssh %1$s@%2$s \"export ANSIBLE_ROLES_PATH='%3$s'; " +
-                        "echo $$ > /ansible-host/pids/%4$s.sshpid; " +
-                        "echo '===== ATTEMPT #%5$d START ansible-playbook =====' >> %8$s; " +
-                        "{ ansible-playbook -i %6$s/%7$s %6$s/%9$s >> %8$s 2>&1; rc=$?; } ; " +
-                        "echo '===== ATTEMPT #%5$d END (exit='$rc') =====' >> %8$s; " +
+                "ssh %s -p %d %s@%s \"export ANSIBLE_ROLES_PATH='%s'; " +
+                        "echo $$ > /ansible-host/pids/%s.sshpid; " +
+                        "echo '===== ATTEMPT #%d START ansible-playbook =====' >> %s; " +
+                        "{ ansible-playbook -i %s/%s %s/%s >> %s 2>&1; rc=$?; } ; " +
+                        "echo '===== ATTEMPT #%d END (exit='$rc') =====' >> %s; " +
                         "exit $rc\"",
-                remoteUser, remoteHost, remoteRolesDir, jobId,
-                attemptNo, remoteJobsDir, inventoryFileName, logFile, playbookFileName
+                SSH_OPTS, remotePort, remoteUser, remoteHost, remoteRolesDir,
+                jobId,
+                attemptNo, logFile,
+                remoteJobsDir, inventoryFileName, remoteJobsDir, playbookFileName, logFile,
+                attemptNo, logFile
         );
+
 
 
         ProcessBuilder pb = new ProcessBuilder(detectShell(), detectShellFlag(), command);
@@ -306,10 +543,11 @@ public class AnsibleRunnerService {
         try {
             // placeholders: %1$s remoteUser, %2$s remoteHost, %3$s jobId
             String kill = String.format(
-                    "ssh %1$s@%2$s \"(test -f /ansible-host/pids/%3$s.pid && kill -9 \\$(cat /ansible-host/pids/%3$s.pid) 2>/dev/null || true); " +
-                            "(test -f /ansible-host/pids/%3$s.sshpid && kill -9 \\$(cat /ansible-host/pids/%3$s.sshpid) 2>/dev/null || true); " +
-                            "pkill -f playbook_%3$s.yml || true\"",
-                    remoteUser, remoteHost, jobId
+                    "ssh %s -p %d %s@%s \"(test -f /ansible-host/pids/%s.pid && kill -9 \\$(cat /ansible-host/pids/%s.pid) 2>/dev/null || true); " +
+                            "(test -f /ansible-host/pids/%s.sshpid && kill -9 \\$(cat /ansible-host/pids/%s.sshpid) 2>/dev/null || true); " +
+                            "pkill -f playbook_%s.yml || true\"",
+                    SSH_OPTS, remotePort, remoteUser, remoteHost,
+                    jobId, jobId, jobId, jobId, jobId
             );
             execLocal(kill);
         } catch (Exception e) {
@@ -342,8 +580,12 @@ public class AnsibleRunnerService {
         try (FileWriter fw = new FileWriter(tmp, StandardCharsets.UTF_8)) {
             fw.write(content);
         }
-        String scpCmd = String.format("scp \"%s\" %s@%s:%s", tmp, remoteUser, remoteHost, remotePath);
+        String scpCmd = String.format(
+                "scp -P %d -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \"%s\" %s@%s:%s",
+                remotePort, tmp, remoteUser, remoteHost, remotePath
+        );
         execLocal(scpCmd);
+
 
         // xoá file tạm local
         Files.deleteIfExists(Paths.get(tmp.replace("/", FileSystems.getDefault().getSeparator())));
@@ -354,8 +596,8 @@ public class AnsibleRunnerService {
         try {
             String logFile = remoteLogsDir + "/" + jobId + ".log";
             String cmd = String.format(
-                    "ssh %1$s@%2$s \"echo '[%3$s] %4$s' >> %5$s\"",
-                    remoteUser, remoteHost,
+                    "ssh %s -p %d %s@%s \"echo '[%s] %s' >> %s\"",
+                    SSH_OPTS, remotePort, remoteUser, remoteHost,
                     java.time.ZonedDateTime.now(),
                     message.replace("\"","\\\""),
                     logFile
