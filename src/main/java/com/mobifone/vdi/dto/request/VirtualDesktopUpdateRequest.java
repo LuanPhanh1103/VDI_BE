@@ -10,6 +10,6 @@ import lombok.experimental.FieldDefaults;
 @FieldDefaults(level = AccessLevel.PRIVATE)
 public class VirtualDesktopUpdateRequest {
     String name;
-    String password;
+    String domainAccountPassword;
     String userId;
 }

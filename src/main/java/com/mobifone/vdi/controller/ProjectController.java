@@ -4,6 +4,7 @@ import com.mobifone.vdi.common.LogApi;
 import com.mobifone.vdi.dto.ApiResponse;
 import com.mobifone.vdi.dto.request.ProjectMemberRequest;
 import com.mobifone.vdi.dto.request.ProjectRequest;
+import com.mobifone.vdi.dto.response.InstanceResponse;
 import com.mobifone.vdi.dto.response.PagedResponse;
 import com.mobifone.vdi.dto.response.ProjectResponse;
 import com.mobifone.vdi.service.ProjectService;
@@ -78,8 +79,11 @@ public class ProjectController {
 
     @LogApi
     @DeleteMapping("/{id}")
-    public ApiResponse<String> softDelete(@PathVariable String id) {
-        projectService.softDelete(id);
-        return ApiResponse.<String>builder().result("Xóa project thành công").build();
+    public ApiResponse<InstanceResponse> softDelete(
+            @PathVariable String id,
+            @RequestParam(required = false) String region
+    ) {
+        InstanceResponse res = projectService.softDelete(id, region);
+        return ApiResponse.<InstanceResponse>builder().result(res).build();
     }
 }

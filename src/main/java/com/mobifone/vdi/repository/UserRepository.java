@@ -16,12 +16,6 @@ public interface UserRepository extends JpaRepository<User, String> {
 
     Optional<User> findByUsername(String username);
 
-//    Page<User> findByFirstNameIgnoreCaseContainingOrLastNameIgnoreCaseContaining(
-//            String firstNameLike,
-//            String lastNameLike,
-//            Pageable pageable
-//    );
-
     @Query("""
         select distinct u
         from User u

@@ -59,25 +59,6 @@ public class RoleService {
         return roleMapper.toRoleResponse(roleRepository.save(role));
     }
 
-//    @PreAuthorize("hasRole('get_all_roles')")
-//    public PagedResponse<RoleResponse> getAll(int page, int size) {
-//        int currentPage = Math.max(page, 1); // 1-based
-//        Pageable pageable = PageRequest.of(currentPage - 1, size);
-//
-//        Page<Role> pageData = roleRepository.findAll(pageable);
-//        var data = pageData.getContent().stream()
-//                .map(roleMapper::toRoleResponse)
-//                .toList();
-//
-//        return PagedResponse.<RoleResponse>builder()
-//                .data(data)
-//                .page(currentPage)
-//                .size(size)
-//                .totalElements(pageData.getTotalElements())
-//                .totalPages(pageData.getTotalPages())
-//                .build();
-//    }
-
     @PreAuthorize("hasRole('get_roles')")
     public PagedResponse<RoleResponse> getAll(int page, int size, String search) {
         int currentPage = Math.max(page, 1); // 1-based
@@ -104,13 +85,6 @@ public class RoleService {
                 .totalPages(pageData.getTotalPages())
                 .build();
     }
-
-    // Giữ lại hàm cũ nếu nơi khác đang gọi
-    public PagedResponse<RoleResponse> getAll(int page, int size) {
-        return getAll(page, size, "");
-    }
-
-
 
     @PreAuthorize("hasRole('delete_role')")
     public void delete(String role) {

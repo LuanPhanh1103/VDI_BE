@@ -29,6 +29,8 @@ public class ProvisionPersistService {
     ProvisionTimeoutTracker tracker;
     ProvisionSignalBus signalBus;
     VirtualDesktopService virtualDesktopService;
+    ProjectCascadeService projectCascadeService;
+    AnsibleRunnerService ansible;
 
     public void createProvisioning(String taskId, int count) {
         ProvisionTask t = ProvisionTask.builder()
@@ -55,46 +57,101 @@ public class ProvisionPersistService {
         tracker.register(taskId, 1);
     }
 
-    // ✅ THÊM MỚI: xử lý kết quả delete từ MQ
+    // Khi bắt đầu DESTROY infra (cả project)
+    public void createDestroyingProject(String taskId, String projectId, String ownerUserId) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("destroy_project_id", projectId);
+        payload.put("owner_user_id", ownerUserId);
+
+        ProvisionTask t = ProvisionTask.builder()
+                .taskId(taskId)
+                .status(TaskStatus.DELETING) // hoặc DESTROYING nếu thêm enum
+                .build();
+        try { t.setInstanceFloatingPairs(om.writeValueAsString(payload)); } catch (Exception ignored) {}
+        repo.save(t);
+        tracker.register(taskId, 1);
+    }
+
+    // Xử lý result từ MQ cho cả delete instance & destroy infra
+    @org.springframework.transaction.annotation.Transactional
     public void handleDeleteResult(String taskId, boolean ok, String rawMessage) {
         ProvisionTask task = repo.findByTaskId(taskId)
                 .orElseGet(() -> ProvisionTask.builder().taskId(taskId).build());
 
-        // Lưu raw trong errorMessage để truy vết (đúng như bạn yêu cầu “lấy tin nhắn raw thôi”)
+        if (task.getStatus() == TaskStatus.DELETED || task.getStatus() == TaskStatus.DELETE_FAILED) {
+            log.info("[DeleteResult] task {} already terminal: {}", taskId, task.getStatus());
+            return;
+        }
+
         task.setErrorMessage(rawMessage);
+
+        final String payload = task.getInstanceFloatingPairs();
+        final String instanceId = extractStr(payload, "delete_instance_id");
+        final String projectId  = extractStr(payload, "destroy_project_id");
 
         if (ok) {
             task.setStatus(TaskStatus.DELETED);
-            String idInstance = extractDeleteInstanceId(task.getInstanceFloatingPairs());
-            if (idInstance != null && !idInstance.isBlank()) {
-                try {
-                    // ✅ GỌI XOÁ VD KHI DELETE OK
-                    virtualDesktopService.deleteVirtualDesktopByIdInstance(idInstance);
-                } catch (Exception e) {
-                    log.warn("deleteVirtualDesktopByIdInstance({}) failed: {}", idInstance, e.getMessage());
+            try {
+                if (instanceId != null && !instanceId.isBlank()) {
+                    // --- XÓA 2 NAT PUBLIC CHO INSTANCE NÀY (nếu có đủ thông tin) ---
+                    virtualDesktopService.findByIdInstanceOpt(instanceId).ifPresent(vd -> {
+                        String wan = vd.getIpPublic();
+                        String rdp = vd.getPortPublic();
+                        String win = vd.getPortWinRmPublic();
+
+                        // RDP NAT
+                        if (wan != null && !wan.isBlank() && rdp != null && rdp.matches("\\d+")) {
+                            try {
+                                boolean delRdp = ansible.runNatDelete(taskId + "_rdp_del", wan, Integer.parseInt(rdp));
+                                log.info("[DeleteResult] NAT delete RDP {}:{} => {}", wan, rdp, delRdp ? "OK" : "FAILED");
+                            } catch (Exception ex) {
+                                log.warn("[DeleteResult] NAT delete RDP error: {}", ex.getMessage());
+                            }
+                        }
+
+                        // WinRM NAT
+                        if (wan != null && !wan.isBlank() && win != null && win.matches("\\d+")) {
+                            try {
+                                boolean delWin = ansible.runNatDelete(taskId + "_winrm_del", wan, Integer.parseInt(win));
+                                log.info("[DeleteResult] NAT delete WINRM {}:{} => {}", wan, win, delWin ? "OK" : "FAILED");
+                            } catch (Exception ex) {
+                                log.warn("[DeleteResult] NAT delete WINRM error: {}", ex.getMessage());
+                            }
+                        }
+                    });
+
+
+                    virtualDesktopService.deleteVirtualDesktopByIdInstance(instanceId);
+                    log.info("[DeleteResult] DELETED instance {}, task {}", instanceId, taskId);
+                } else if (projectId != null && !projectId.isBlank()) {
+                    projectCascadeService.cascadeMarkProjectDeleted(projectId); // <<< đổi sang service mới
+                    log.info("[DeleteResult] DESTROYED project {}, task {}", projectId, taskId);
+                } else {
+                    log.warn("[DeleteResult] task {} ok=true nhưng thiếu payload", taskId);
                 }
-            } else {
-                log.warn("No delete_instance_id stored for task {}", taskId);
+            } catch (Exception e) {
+                log.warn("[DeleteResult] Cascade DB failed for task {}: {}", taskId, e.getMessage(), e);
             }
         } else {
             task.setStatus(TaskStatus.DELETE_FAILED);
+            log.warn("[DeleteResult] task {} FAILED. raw={}", taskId, rawMessage);
         }
 
         repo.save(task);
         tracker.cancel(taskId);
-        if (signalBus != null) repo.findByTaskId(taskId).ifPresent(t -> signalBus.complete(taskId, t));
+        repo.findByTaskId(taskId).ifPresent(t -> signalBus.complete(taskId, t));
     }
 
-    // ✅ THÊM MỚI: lấy ra id instance đã lưu khi createDeleting
-    private String extractDeleteInstanceId(String json) {
+
+    private String extractStr(String json, String key) {
         if (json == null || json.isBlank()) return null;
         try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> m = om.readValue(json, Map.class);
-            Object v = m.get("delete_instance_id");
+            Map<?, ?> m = om.readValue(json, Map.class);
+            Object v = m.get(key);
             return v == null ? null : String.valueOf(v);
         } catch (Exception ignored) { return null; }
     }
+
 
     /** SUCCESS: gom theo VM, chỉ set fixed_ip_v4 nếu có network "provider"; nếu không → null */
 

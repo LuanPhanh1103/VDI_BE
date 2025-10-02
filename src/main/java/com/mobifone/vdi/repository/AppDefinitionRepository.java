@@ -23,5 +23,6 @@ public interface AppDefinitionRepository extends JpaRepository<AppDefinition, St
     Page<AppDefinition> findByEnabled(Boolean enabled, Pageable pageable);
 
     Page<AppDefinition> findByActionTypeAndEnabled(ActionType actionType, Boolean enabled, Pageable pageable);
+
 }
 

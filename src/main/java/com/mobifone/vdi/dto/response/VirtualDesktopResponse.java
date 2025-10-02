@@ -15,7 +15,7 @@ public class VirtualDesktopResponse {
     String name;            // cứng
     String ipLocal;
     String ipPublic;
-    String password;        // cứng
+//    String password;        // cứng
     HasGPU hasGPU;          // cứng
     String portLocal;
     String portPublic;      // cứng
@@ -25,6 +25,11 @@ public class VirtualDesktopResponse {
     VolumeType volumeType;
     String volumeSize;
     String idInstance;
+    String region;
+    String domainName;
+    String domainOu;
+    String domainAccountUsername;
+    String domainAccountPassword;
 //    String userId;
 //    String projectId;
     String typeVirtualDesktop;

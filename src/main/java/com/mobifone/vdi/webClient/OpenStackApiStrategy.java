@@ -13,7 +13,8 @@ import reactor.core.publisher.Mono;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Component
 @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
@@ -22,9 +23,13 @@ public class OpenStackApiStrategy implements ApiStrategy {
 
     WebClient webClient;
 
-    // Lưu token và thời gian hết hạn
-    AtomicReference<String> cachedToken = new AtomicReference<>();
-    AtomicReference<Instant> tokenExpiryTime = new AtomicReference<>(Instant.EPOCH); // mặc định là hết hạn
+    // Cache token THEO REGION
+    static final class TokenCache {
+        volatile String token;
+        volatile Instant expiry = Instant.EPOCH;
+    }
+    // key = region (ví dụ "yha_yoga", "" nếu không có region)
+    ConcurrentHashMap<String, TokenCache> tokenByRegion = new ConcurrentHashMap<>();
 
     public OpenStackApiStrategy(WebClient.Builder builder) {
         this.webClient = builder.baseUrl(Constants.OPENSTACK.URL).build();
@@ -35,50 +40,51 @@ public class OpenStackApiStrategy implements ApiStrategy {
         return Constants.OPENSTACK.NAME_SERVICE.equalsIgnoreCase(serviceType);
     }
 
+    // Helper ghép region + endpoint relative
+    private String withRegion(String region, String endpoint) {
+        String p = Optional.ofNullable(region).orElse("").trim();     // "yha_yoga" hoặc ""
+        String e = (endpoint == null ? "" : endpoint);
+        if (!e.startsWith("/")) e = "/" + e;
+        if (p.isEmpty()) return e;
+        if (!p.startsWith("/")) p = "/" + p;
+        return p + e;
+    }
+
     @Override
-    public String callApi(HttpMethod method, String endpoint, Object requestBody) {
+    public String callApi(HttpMethod method, String endpoint, Object requestBody, String region) {
         try {
+            String finalPath = withRegion(region, endpoint); // GHÉP 1 LẦN DUY NHẤT
+
             WebClient.RequestBodySpec requestSpec = webClient
                     .method(method)
-                    .uri(endpoint)
-                    .headers(headers -> {
-                        headers.setContentType(MediaType.APPLICATION_JSON);
-                        // Thêm token nếu không phải gọi auth
-                        if (!endpoint.contains("/v3/auth/tokens")) {
-                            headers.set("x-subject-token", getValidToken());
+                    .uri(finalPath)
+                    .headers(h -> {
+                        h.setContentType(MediaType.APPLICATION_JSON);
+                        // endpoint NHẬN VÀO là relative (chưa có region) => so sánh trực tiếp
+                        if (!endpoint.equals(Constants.OPENSTACK.ENDPOINT.AUTHENTICATION)) {
+                            h.set("x-subject-token", getValidToken(region));
                         }
                     });
-            log.info("haha: {}", requestSpec);
-            Mono<String> responseMono;
 
-            if (method == HttpMethod.GET || requestBody == null) {
-                responseMono = requestSpec.retrieve()
-                        .onStatus(
-                                HttpStatusCode::isError,
-                                res -> res.bodyToMono(String.class)
-                                        .flatMap(err -> {
-                                            log.error("API GET error: {}", err);
-                                            return Mono.error(new RuntimeException(err));
-                                        })
-                        )
-                        .bodyToMono(String.class);
-            } else {
-                responseMono = requestSpec
-                        .bodyValue(requestBody)
-                        .retrieve()
-                        .onStatus(
-                                HttpStatusCode::isError,
-                                res -> res.bodyToMono(String.class)
-                                        .flatMap(err -> {
-                                            log.error("API [{} {}] returned error: {}", method, endpoint, err);
-                                            return Mono.error(new RuntimeException("OpenStack API error: " + err));
-                                        })
-                        )
-                        .bodyToMono(String.class);
-            }
+            Mono<String> mono = (method == HttpMethod.GET || requestBody == null)
+                    ? requestSpec.retrieve()
+                    .onStatus(HttpStatusCode::isError, res -> res.bodyToMono(String.class)
+                            .flatMap(err -> {
+                                log.error("API GET error: {}", err);
+                                return Mono.error(new RuntimeException(err));
+                            }))
+                    .bodyToMono(String.class)
+                    : requestSpec.bodyValue(requestBody)
+                    .retrieve()
+                    .onStatus(HttpStatusCode::isError, res -> res.bodyToMono(String.class)
+                            .flatMap(err -> {
+                                log.error("API [{} {}] returned error: {}", method, finalPath, err);
+                                return Mono.error(new RuntimeException("OpenStack API error: " + err));
+                            }))
+                    .bodyToMono(String.class);
 
-            String result = responseMono.block(Duration.ofMinutes(5));
-            log.info("API [{} {}] success", method, endpoint);
+            String result = mono.block(Duration.ofMinutes(5));
+            log.info("API [{} {}] success", method, finalPath);
             return result;
 
         } catch (Exception e) {
@@ -87,70 +93,61 @@ public class OpenStackApiStrategy implements ApiStrategy {
         }
     }
 
-    /**
-     * Trả về token hợp lệ hiện tại, nếu hết hạn thì gọi lại
-     */
-    private String getValidToken() {
+
+    /** Lấy token hợp lệ theo region (mỗi region 1 token riêng) */
+    private String getValidToken(String region) {
+        String key = Optional.ofNullable(region).orElse("").trim(); // "" nếu không có region
+        TokenCache cache = tokenByRegion.computeIfAbsent(key, k -> new TokenCache());
+
         Instant now = Instant.now();
-
-        // Nếu token chưa tồn tại hoặc hết hạn
-        if (cachedToken.get() == null || now.isAfter(tokenExpiryTime.get())) {
-            log.info("Token expired or not found. Requesting new token...");
-            String newToken = fetchToken();
-            cachedToken.set(newToken);
-            tokenExpiryTime.set(now.plus(Duration.ofHours(2))); // hiệu lực 2 giờ
+        if (cache.token == null || now.isAfter(cache.expiry)) {
+            log.info("Token for region='{}' expired or not found. Requesting new token...", key);
+            String newToken = fetchToken(key);
+            cache.token = newToken;
+            cache.expiry = now.plus(Duration.ofHours(2)); // ví dụ 2h
         }
-
-        return cachedToken.get();
+        return cache.token;
     }
 
-    /**
-     * Gọi OpenStack API để lấy token
-     */
-    private String fetchToken() {
+    /** Gọi OpenStack AUTH theo region: POST {/{region}}/v3/auth/tokens */
+    private String fetchToken(String region) {
         String payload = """
         {
           "auth": {
             "identity": {
-              "methods": [
-                "password"
-              ],
+              "methods": ["password"],
               "password": {
                 "user": {
                   "name": "bucloud",
                   "password": "bucloud@123",
-                  "domain": {
-                    "name": "Default"
-                  }
+                  "domain": { "name": "Default" }
                 }
               }
             },
             "scope": {
               "project": {
                 "name": "Private.BUCLOUD.Test",
-                "domain": {
-                  "name": "Default"
-                }
+                "domain": { "name": "Default" }
               }
             }
           }
         }
         """;
 
-        return webClient
-                .post()
-                .uri(Constants.OPENSTACK.ENDPOINT.AUTHENTICATION)
+        String authPath = withRegion(region, Constants.OPENSTACK.ENDPOINT.AUTHENTICATION); // /{region}/v3/auth/tokens
+
+        return webClient.post()
+                .uri(authPath)
                 .contentType(MediaType.APPLICATION_JSON)
                 .bodyValue(payload)
-                .exchangeToMono(response -> {
-                    if (response.statusCode().is2xxSuccessful()) {
-                        return Mono.justOrEmpty(response.headers().header("x-subject-token").stream().findFirst());
+                .exchangeToMono(resp -> {
+                    if (resp.statusCode().is2xxSuccessful()) {
+                        return Mono.justOrEmpty(resp.headers().header("x-subject-token").stream().findFirst());
                     } else {
-                        return response.bodyToMono(String.class)
-                                .flatMap(err -> {
-                                    log.error("Auth failed: {}", err);
-                                    return Mono.error(new RuntimeException("Auth failed: " + err));
-                                });
+                        return resp.bodyToMono(String.class).flatMap(err -> {
+                            log.error("Auth failed (region='{}'): {}", region, err);
+                            return Mono.error(new RuntimeException("Auth failed: " + err));
+                        });
                     }
                 })
                 .block(Duration.ofSeconds(10));

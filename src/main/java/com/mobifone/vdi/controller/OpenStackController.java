@@ -89,7 +89,7 @@ public class OpenStackController {
 
     // noVNC
     @LogApi
-    @GetMapping("/noVNC")
+    @PostMapping("/noVNC")
     ApiResponse<NoVNCResponse> noVNC(
             @RequestParam(name="region", defaultValue="yha_yoga") String region,
             @RequestBody NoVNCRequest request) {

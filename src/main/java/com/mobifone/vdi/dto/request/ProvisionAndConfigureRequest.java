@@ -25,6 +25,8 @@ public class ProvisionAndConfigureRequest {
 
     @NotBlank String usernameOfVdi;
 
+    String domainAccountUsername;
+
     // ===== Metadata VD =====
     @NotBlank String name;
     @NotBlank String cpu;

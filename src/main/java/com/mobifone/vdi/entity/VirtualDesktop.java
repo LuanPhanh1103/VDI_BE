@@ -22,18 +22,29 @@ public class VirtualDesktop extends AbstractAuditingEntity<String> implements Se
     @GeneratedValue(strategy = GenerationType.UUID)
     String id;
 
+    String region;
     String ipLocal;
     String ipPublic;
     String password;
     String name;
     String portLocal;
+
+    @Column(unique = true)
     String portPublic;
+    @Column(unique = true)
     String portWinRmPublic;
+
     String cpu;
     String gpu;
     String ram;
     String idInstance;
     String typeVirtualDesktop;
+
+    Boolean isDomainController = false;
+    String domainName;
+    String domainOu;
+    String domainAccountUsername;
+    String domainAccountPassword;
 
     @Enumerated(EnumType.STRING)
     VolumeType volumeType;

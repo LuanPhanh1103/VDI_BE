@@ -17,6 +17,7 @@ import lombok.experimental.FieldDefaults;
 import org.springframework.data.domain.*;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 
@@ -90,5 +91,12 @@ public class AppDefinitionService {
     @PreAuthorize("hasRole('delete_app')")
     public void delete(String id) {
         repo.deleteById(id);
+    }
+
+    // ==== Dùng nội bộ cho Orchestrator (không gắn PreAuthorize để chạy trong thread nền) ====
+    @Transactional(readOnly = true)
+    public AppDefinition getEntityByCodeOrThrow(String code) {
+        return repo.findByCode(code)
+                .orElseThrow(() -> new AppException(ErrorCode.ANSIBLE_NOT_FOUND));
     }
 }

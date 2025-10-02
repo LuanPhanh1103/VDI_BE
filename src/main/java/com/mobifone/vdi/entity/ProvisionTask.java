@@ -16,7 +16,7 @@ import java.io.Serializable;
 @AllArgsConstructor
 @FieldDefaults(level = AccessLevel.PRIVATE)
 @Entity
-    public class ProvisionTask extends AbstractAuditingEntity<String> implements Serializable {
+public class ProvisionTask extends AbstractAuditingEntity<String> implements Serializable {
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
     String id;

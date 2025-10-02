@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
@@ -37,6 +38,42 @@ public class VirtualDesktopService {
     UserService userService;
     ProjectRepository projectRepository;
     UserProjectRepository userProjectRepository;
+
+    // ADDED: lấy DC theo project (+ region nếu cần)
+    @Transactional(readOnly = true)
+    public Optional<VirtualDesktop> findDomainController(String projectId, String region) {
+        if (region == null || region.isBlank())
+            return virtualDesktopRepository.findFirstByProject_IdAndIsDomainControllerTrue(projectId);
+        return virtualDesktopRepository.findFirstByProject_IdAndRegionAndIsDomainControllerTrue(projectId, region);
+    }
+
+    // === DÙNG CHO SERVICE KHÁC ===
+    @Transactional(readOnly = true)
+    public boolean isPortPublicUsed(int port) {
+        return virtualDesktopRepository.existsByPortPublic(String.valueOf(port));
+    }
+
+    @Transactional
+    public void unassignUserFromProjectVDIs(String projectId, String userId) {
+        var vdis = virtualDesktopRepository.findAllByProject_IdAndUser_Id(projectId, userId);
+        for (var vd : vdis) vd.setUser(null);
+        virtualDesktopRepository.saveAll(vdis);
+    }
+
+    @Transactional
+    public void markAllDeletedByProject(String projectId) {
+        var vdis = virtualDesktopRepository.findAllByProject_Id(projectId);
+        for (var vd : vdis) vd.setIsDeleted(1L);
+        virtualDesktopRepository.saveAll(vdis);
+    }
+
+    // Cho Orchestrator dùng, tránh dùng repo trực tiếp
+    @Transactional
+    public VirtualDesktop save(VirtualDesktop vd) { return virtualDesktopRepository.save(vd); }
+
+    @Transactional(readOnly = true)
+    public Optional<VirtualDesktop> findById(String id) { return virtualDesktopRepository.findById(id); }
+
 
     // ===== Helpers =====
     private String currentUserId() {
@@ -74,145 +111,28 @@ public class VirtualDesktopService {
         return virtualDesktopMapper.toVirtualDesktopResponse(vd);
     }
 
-    // ===== Admin: xem tất cả (giữ lại cho tương thích) =====
-//    @PreAuthorize("hasRole('admin') or hasRole('get_all_VDI')")
-//    @Transactional(readOnly = true)
-//    public PagedResponse<VirtualDesktopResponse> getAllVirtualDesktops(int page, int size) {
-//        int currentPage = Math.max(page, 1);
-//        Pageable pageable = PageRequest.of(currentPage - 1, size);
-//
-//        Page<VirtualDesktop> pageData = virtualDesktopRepository.findAll(pageable);
-//        var data = pageData.getContent().stream()
-//                .map(virtualDesktopMapper::toVirtualDesktopResponse)
-//                .toList();
-//
-//        return PagedResponse.<VirtualDesktopResponse>builder()
-//                .data(data)
-//                .page(currentPage)
-//                .size(size)
-//                .totalElements(pageData.getTotalElements())
-//                .totalPages(pageData.getTotalPages())
-//                .build();
-//    }
-
-
-//    // ===== Legacy: theo userId (nên deprecate ở FE) =====
-//    @PreAuthorize("hasRole('admin') or #userId == principal?.name")
-//    @Transactional(readOnly = true)
-//    public List<VirtualDesktopResponse> getAllVirtualDesktopsByUserId(String userId) {
-//        return virtualDesktopRepository.findAllByUserId(userId).stream()
-//                .map(virtualDesktopMapper::toVirtualDesktopResponse).toList();
-//    }
-
-    // ===== Resolve theo quyền hiện tại (Admin/Owner/Member) – có thể lọc theo projectId =====
-//    @PreAuthorize("hasRole('get_virtualDesktops')")
-//    @Transactional(readOnly = true)
-//    public PagedResponse<VirtualDesktopResponse> getVDIsForCurrentUser(
-//            String projectId, String search, int page, int size) {
-//
-//        final String kw = search == null ? "" : search.trim().toLowerCase();
-//
-//        List<VirtualDesktop> all; // làm việc trên entity trước, rồi mới map DTO
-//
-//        if (isAdmin()) {
-//            all = (projectId == null)
-//                    ? virtualDesktopRepository.findAll()
-//                    : virtualDesktopRepository.findAllByProject_Id(projectId);
-//
-//        } else {
-//            String uid = currentUserId();
-//
-//            if (projectId != null) {
-//                var project = projectRepository.findById(projectId)
-//                        .orElseThrow(() -> new AppException(ErrorCode.PROJECT_NOT_EXISTED));
-//
-//                if (project.getOwner().getId().equals(uid)) {
-//                    all = virtualDesktopRepository.findAllByProject_Id(projectId);
-//                } else if (userProjectRepository.existsByUser_IdAndProject_Id(uid, projectId)) {
-//                    all = virtualDesktopRepository.findAllByProject_IdAndUser_Id(projectId, uid);
-//                } else {
-//                    all = List.of();
-//                }
-//            } else {
-//                var myOwnerProjects = projectRepository.findAllByOwner_Id(uid);
-//                if (!myOwnerProjects.isEmpty()) {
-//                    all = myOwnerProjects.stream()
-//                            .flatMap(p -> virtualDesktopRepository.findAllByProject_Id(p.getId()).stream())
-//                            .toList();
-//                } else {
-//                    all = virtualDesktopRepository.findAllByUserId(uid);
-//                }
-//            }
-//        }
-//
-//        // --- LỌC THEO KEYWORD (name, ipLocal, ipPublic), không phân biệt hoa/thường ---
-//        if (!kw.isBlank()) {
-//            all = all.stream()
-//                    .filter(vd -> containsIgnoreCase(vd.getName(), kw)
-//                            || containsIgnoreCase(vd.getIpLocal(), kw)
-//                            || containsIgnoreCase(vd.getIpPublic(), kw))
-//                    .toList();
-//        }
-//
-//        // --- Phân trang thủ công 1-based ---
-//        int currentPage = Math.max(page, 1);
-//        int pageSize = Math.max(size, 1);
-//        int fromIndex = (currentPage - 1) * pageSize;
-//
-//        int total = all.size();
-//        int totalPages = (int) Math.ceil((double) total / pageSize);
-//
-//        List<VirtualDesktopResponse> paged;
-//        if (fromIndex >= total) {
-//            paged = List.of();
-//        } else {
-//            int toIndex = Math.min(fromIndex + pageSize, total);
-//            paged = all.subList(fromIndex, toIndex).stream()
-//                    .map(virtualDesktopMapper::toVirtualDesktopResponse)
-//                    .toList();
-//        }
-//
-//        return PagedResponse.<VirtualDesktopResponse>builder()
-//                .data(paged)
-//                .page(currentPage)
-//                .size(pageSize)
-//                .totalElements(total)
-//                .totalPages(totalPages)
-//                .build();
-//    }
-//
-//    // helper an toàn null
-//    private boolean containsIgnoreCase(String field, String kwLower) {
-//        return field != null && field.toLowerCase().contains(kwLower);
-//    }
-
-    @PreAuthorize("hasRole('get_virtualDesktops')") // giữ permission chung
+    @PreAuthorize("hasRole('get_virtualDesktops')")
     @Transactional(readOnly = true)
     public PagedResponse<VirtualDesktopResponse> getVDIsForCurrentUser(
-            String projectId, String search, int page, int size) {
+            String projectId, String search, int page, int size, String region) {   // <<< NEW param
 
         int currentPage = Math.max(page, 1);
         int pageSize = Math.max(size, 1);
         Pageable pageable = PageRequest.of(currentPage - 1, pageSize);
         String kw = (search == null) ? "" : search.trim();
+        String r = (region == null || region.isBlank()) ? null : region;
 
         Page<VirtualDesktop> pageData;
 
         if (isAdmin()) {
-            // ADMIN: tất cả
-            pageData = virtualDesktopRepository.searchAllVDIs(projectId, kw, pageable);
-
+            pageData = virtualDesktopRepository.searchAllVDIs(projectId, kw, r, pageable);
         } else {
             String uid = currentUserId();
-            // xác định có phải OWNER của ít nhất 1 project
             List<String> ownedProjectIds = projectRepository.findIdsByOwner(uid);
-
             if (!ownedProjectIds.isEmpty()) {
-                // OWNER: tất cả VDI thuộc các project do mình làm chủ
-                pageData = virtualDesktopRepository.searchVDIsInProjects(ownedProjectIds, projectId, kw, pageable);
+                pageData = virtualDesktopRepository.searchVDIsInProjects(ownedProjectIds, projectId, kw, r, pageable);
             } else {
-                // MEMBER: chỉ VDI gán cho chính mình
-                pageData = virtualDesktopRepository.searchAssignedVDIs(uid, projectId, kw, pageable);
+                pageData = virtualDesktopRepository.searchAssignedVDIs(uid, projectId, kw, r, pageable);
             }
         }
 
@@ -228,8 +148,6 @@ public class VirtualDesktopService {
                 .totalPages(pageData.getTotalPages())
                 .build();
     }
-
-
 
     // ===== Get by ID – kiểm tra phạm vi =====
     @PreAuthorize("hasRole('get_virtualDesktop') or @projectSecurity.canReadVDI(#id, authentication)")
@@ -266,11 +184,31 @@ public class VirtualDesktopService {
         virtualDesktopRepository.save(vd);
     }
 
+    @Transactional(readOnly = true)
+    public Optional<VirtualDesktop> findByIdInstanceOpt(String idInstance) {
+        return virtualDesktopRepository.findByIdInstance(idInstance);
+    }
+
     public void deleteVirtualDesktopByIdInstance(String id) {
         VirtualDesktop vd = virtualDesktopRepository.findByIdInstance(id)
                 .orElseThrow(() -> new AppException(ErrorCode.VIRTUAL_DESKTOP_NOT_EXITED));
         vd.setIsDeleted(1L);
         virtualDesktopRepository.save(vd);
+    }
+
+    @Transactional(readOnly = true)
+    public List<VirtualDesktop> findByJobId(String jobId) {
+        return virtualDesktopRepository.findByJobId(jobId);
+    }
+
+    /** Đã có VDI dùng port_winrm_public này chưa? */
+    public boolean isPortWinRmPublicUsed(int port) {
+        return virtualDesktopRepository.existsByPortWinRmPublic(String.valueOf(port));
+    }
+
+    /** Bất kỳ port public nào (RDP NAT hoặc WinRM NAT) đã dùng chưa? */
+    public boolean isAnyPublicPortUsed(int port) {
+        return isPortPublicUsed(port) || isPortWinRmPublicUsed(port);
     }
 
 }

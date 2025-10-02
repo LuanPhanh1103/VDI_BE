@@ -8,14 +8,11 @@ import com.mobifone.vdi.dto.response.PagedResponse;
 import com.mobifone.vdi.dto.response.UserResponse;
 import com.mobifone.vdi.entity.Role;
 import com.mobifone.vdi.entity.User;
-import com.mobifone.vdi.entity.UserProject;
 import com.mobifone.vdi.entity.enumeration.ProjectRole;
 import com.mobifone.vdi.exception.AppException;
 import com.mobifone.vdi.exception.ErrorCode;
 import com.mobifone.vdi.mapper.UserMapper;
-import com.mobifone.vdi.repository.ProjectRepository;
 import com.mobifone.vdi.repository.RoleRepository;
-import com.mobifone.vdi.repository.UserProjectRepository;
 import com.mobifone.vdi.repository.UserRepository;
 import lombok.AccessLevel;
 import lombok.RequiredArgsConstructor;
@@ -31,23 +28,19 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 
 @Service
 @RequiredArgsConstructor
 @FieldDefaults(level = AccessLevel.PRIVATE, makeFinal = true)
 @Slf4j
 public class UserService {
-    UserRepository userRepository;
+    UserRepository userRepository;   // OK (cùng domain)
     RoleRepository roleRepository;
     UserMapper userMapper;
     PasswordEncoder passwordEncoder;
-    ProjectRepository projectRepository;
 
-    // thêm 2 repository này
-    UserProjectRepository userProjectRepository;
+    UserProjectService userProjectService; // NEW
 
     @PreAuthorize("hasRole('create_user')")
     @Transactional
@@ -55,46 +48,24 @@ public class UserService {
         User user = userMapper.toUser(request);
         user.setPassword(passwordEncoder.encode(request.getPassword()));
 
-        // gán role mặc định USER
         HashSet<Role> roles = new HashSet<>();
         roleRepository.findById(PredefinedRole.USER_ROLE).ifPresent(roles::add);
         user.setRoles(roles);
 
-        try {
-            user = userRepository.save(user);
-        } catch (DataIntegrityViolationException exception) {
-            throw new AppException(ErrorCode.USER_EXISTED);
-        }
+        try { user = userRepository.save(user); }
+        catch (DataIntegrityViolationException e) { throw new AppException(ErrorCode.USER_EXISTED); }
 
-        // --- Nếu current user là OWNER: gán user mới vào tất cả project mình làm chủ (role = MEMBER) ---
+        // Nếu current user là OWNER: gán user mới vào tất cả project mình làm chủ
         var auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth != null) {
-            String currentUsername = auth.getName();
-            // lấy id của người tạo
-            String ownerId = userRepository.findByUsername(currentUsername)
+            String ownerId = userRepository.findByUsername(auth.getName())
                     .orElseThrow(() -> new AppException(ErrorCode.USER_NOT_EXISTED))
                     .getId();
-
-            // lấy các project mà current user là Owner
-            var ownedProjects = projectRepository.findAllByOwner_Id(ownerId);
-            if (!ownedProjects.isEmpty()) {
-                var links = new ArrayList<UserProject>();
-                for (var p : ownedProjects) {
-                    // tránh tạo trùng
-                    if (!userProjectRepository.existsByUser_IdAndProject_Id(user.getId(), p.getId())) {
-                        links.add(UserProject.builder()
-                                .user(user)
-                                .project(p)
-                                .projectRole(ProjectRole.MEMBER)
-                                .build());
-                    }
-                }
-                if (!links.isEmpty()) {
-                    userProjectRepository.saveAll(links);
-                }
+            var projectIds = userProjectService.findProjectIdsOwnedBy(ownerId);
+            for (String pid : projectIds) {
+                userProjectService.addMember(pid, user, ProjectRole.MEMBER);
             }
         }
-
         return userMapper.toUserResponse(user);
     }
 
@@ -204,42 +175,42 @@ public class UserService {
     @PreAuthorize("hasRole('get_users')")
     @Transactional(readOnly = true)
     public PagedResponse<UserResponse> getUsers(int page, int size, String search) {
-        log.info("In method get Users");
         int currentPage = Math.max(page, 1);
-        int pageSize = Math.max(size, 1);
-        Pageable pageable = PageRequest.of(currentPage - 1, pageSize);
-
+        Pageable pageable = PageRequest.of(currentPage - 1, Math.max(size,1));
         String kw = (search == null) ? "" : search.trim();
-        Page<User> pageData;
 
+        Page<User> pageData;
         if (isAdmin()) {
             pageData = kw.isBlank()
                     ? userRepository.findAllWithRoles(pageable)
                     : userRepository.searchAllUsers(kw, pageable);
         } else {
             String uid = getMyInfo().getId();
-            if (!projectRepository.existsByOwner_Id(uid)) {
-                // Member không được xem
+            if (!userProjectService.isOwnerOfAnyProject(uid)) {
                 throw new AppException(ErrorCode.PERMISSION_DENIED);
             }
+            // vẫn dùng các query đã tối ưu sẵn trong UserRepository theo owner scope
             pageData = kw.isBlank()
                     ? userRepository.findUsersInOwnerScope(uid, pageable)
                     : userRepository.searchUsersInOwnerScope(uid, kw, pageable);
         }
 
-        var data = pageData.getContent().stream()
-                .map(userMapper::toUserResponse)
-                .toList();
-
+        var data = pageData.getContent().stream().map(userMapper::toUserResponse).toList();
         return PagedResponse.<UserResponse>builder()
-                .data(data)
-                .page(currentPage)
-                .size(pageSize)
+                .data(data).page(currentPage).size(size)
                 .totalElements(pageData.getTotalElements())
-                .totalPages(pageData.getTotalPages())
-                .build();
+                .totalPages(pageData.getTotalPages()).build();
     }
 
+    /** Được ProjectService gọi khi destroy infra OK */
+    @Transactional
+    public void resetPasswordsForUsersInProject(String projectId) {
+        var ids = userProjectService.findUserIdsByProject(projectId);
+        if (ids.isEmpty()) return;
+        var users = userRepository.findAllById(ids);
+        for (var u : users) u.setPassword("1"); // theo yêu cầu
+        userRepository.saveAll(users);
+    }
 
     // Helper giống các service trước
     private boolean isAdmin() {

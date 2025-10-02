@@ -21,7 +21,11 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.web.util.UriComponentsBuilder;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
@@ -33,25 +37,15 @@ public class OpenStackService {
     ObjectMapper objectMapper;
     ProvisionPersistService provisionPersistService;
 
-    // Dùng riêng cho vài parse nhanh
+    // Parser phụ
     ObjectMapper om = new ObjectMapper();
 
     private ApiStrategy strategy() {
         return strategyFactory.getStrategy(Constants.OPENSTACK.NAME_SERVICE);
     }
 
-    /** Ghép region (vd: "yha_yoga") với endpoint tương đối trong Constants. */
-    private String withRegion(String region, String endpoint) {
-        String p = Optional.ofNullable(region).orElse("").trim();
-        String e = Optional.ofNullable(endpoint).orElse("");
-        if (!e.startsWith("/")) e = "/" + e;
-        if (p.isEmpty()) return e;
-        if (p.startsWith("/")) return p + e;
-        return "/" + p + e;
-    }
-
     // =====================================================================
-    // Provision with retry (per-request region)
+    // Provision with retry
     // =====================================================================
     public String provisionWithRetry(String mode, InstanceRequest req, String userId, String region) {
         int attempts = 0;
@@ -61,6 +55,7 @@ public class OpenStackService {
                     case "personal"     -> provisionPersonal(req, userId, region);
                     case "organization" -> provisionOrganization(req, userId, region);
                     case "add-resource" -> addResource(req, userId, region);
+                    case "add-resource-for-personal" -> addResourceForPersonal(req, userId, region);
                     default -> throw new IllegalArgumentException("Unsupported mode: " + mode);
                 };
                 return resp.getTask_id();
@@ -72,7 +67,7 @@ public class OpenStackService {
     }
 
     // =====================================================================
-    // Đợi kết quả hạ tầng (nếu bạn còn dùng ở chỗ khác)
+    // Đợi kết quả infra (nếu cần dùng chỗ khác)
     // =====================================================================
     @lombok.SneakyThrows
     public InfraView waitUntilInfraSuccessOrTimeout(String taskId, int timeoutMinutes) {
@@ -105,19 +100,38 @@ public class OpenStackService {
     }
 
     // =====================================================================
-    // DELETE instance (per-request region)
+    // Destroy toàn infra/project (nếu dùng)
+    // =====================================================================
+    @PreAuthorize("hasRole('delete_project')")
+    public InstanceResponse requestDestroyInfra(String ownerUserId, String projectId, String region) {
+        String taskId = UUID.randomUUID().toString();
+        provisionPersistService.createDestroyingProject(taskId, projectId, ownerUserId);
+
+        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.DESTROY_INFRA)
+                .queryParam("identifier", taskId)
+                .queryParam("user_id", ownerUserId)
+                .build()
+                .toUriString();
+
+        String raw = strategy().callApi(HttpMethod.DELETE, endpoint, null, region);
+
+        return InstanceResponse.builder()
+                .task_id(taskId)
+                .status(TaskStatus.DELETING.name())
+                .message("Destroy infra requested")
+                .raw(raw)
+                .build();
+    }
+
+    // =====================================================================
+    // DELETE 1 instance
     // =====================================================================
     @PreAuthorize("hasRole('delete_openstack')")
     public InstanceResponse requestDeleteInstance(String idInstance, String userId, String region) {
         String taskId = UUID.randomUUID().toString();
-
-        // Ghi nhận trạng thái xóa để khi nhận result=true thì dọn DB
         provisionPersistService.createDeleting(taskId, idInstance);
 
-        ApiStrategy strategy = strategyFactory.getStrategy(Constants.OPENSTACK.NAME_SERVICE);
-
-        String path = withRegion(region, Constants.OPENSTACK.ENDPOINT.DELETE_RESOURCE);
-        String endpoint = UriComponentsBuilder.fromPath(path)
+        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.DELETE_RESOURCE)
                 .buildAndExpand(idInstance)
                 .toUriString();
 
@@ -127,7 +141,7 @@ public class OpenStackService {
                 .build()
                 .toUriString();
 
-        String raw = strategy.callApi(HttpMethod.DELETE, uriWithQuery, null);
+        String raw = strategy().callApi(HttpMethod.DELETE, uriWithQuery, null, region);
 
         return InstanceResponse.builder()
                 .task_id(taskId)
@@ -138,18 +152,16 @@ public class OpenStackService {
     }
 
     // =====================================================================
-    // Volumes (per-request region)
+    // VOLUMES (lọc name bắt đầu bằng "bu_cloud") + phân trang
     // =====================================================================
     @PreAuthorize("hasRole('get_openstack_volumes')")
     public PagedResponse<VolumeSummary> getVolumesAsPermissions(String projectId, int page, int size, String region) {
         try {
-            ApiStrategy strategy = strategyFactory.getStrategy(Constants.OPENSTACK.NAME_SERVICE);
-            String path = withRegion(region, Constants.OPENSTACK.ENDPOINT.VOLUMES_V3);
-            String endpoint = UriComponentsBuilder.fromPath(path)
+            String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.VOLUMES_V3)
                     .buildAndExpand(projectId)
                     .toUriString();
 
-            String json = strategy.callApi(HttpMethod.GET, endpoint, null);
+            String json = strategy().callApi(HttpMethod.GET, endpoint, null, region);
 
             JsonNode root = om.readTree(json);
             JsonNode arr = root.path("volumes");
@@ -167,7 +179,6 @@ public class OpenStackService {
                 }
             }
 
-            // Phân trang thủ công 1-based
             int currentPage = Math.max(page, 1);
             int fromIndex = (currentPage - 1) * size;
             if (fromIndex >= all.size()) {
@@ -197,13 +208,13 @@ public class OpenStackService {
     }
 
     // =====================================================================
-    // Images (per-request region)
+    // IMAGES
     // =====================================================================
     @PreAuthorize("hasRole('get_openstack_images')")
     public List<ImagesResponse> getImagesAsPermissions(String region) {
         try {
-            String endpoint = withRegion(region, Constants.OPENSTACK.ENDPOINT.IMAGES);
-            String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null);
+            String endpoint = Constants.OPENSTACK.ENDPOINT.IMAGES;
+            String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null, region);
 
             JsonNode root = objectMapper.readTree(responseJson);
             JsonNode imagesNode = root.path("images");
@@ -228,13 +239,13 @@ public class OpenStackService {
     }
 
     // =====================================================================
-    // Flavors (per-request region)
+    // FLAVORS + phân trang
     // =====================================================================
     @PreAuthorize("hasRole('get_openstack_flavors')")
     public PagedResponse<FlavorsResponse> getFlavorsAsPermissions(int page, int size, String region) {
         try {
-            String endpoint = withRegion(region, Constants.OPENSTACK.ENDPOINT.FLAVORS);
-            String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null);
+            String endpoint = Constants.OPENSTACK.ENDPOINT.FLAVORS;
+            String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null, region);
 
             JsonNode root = objectMapper.readTree(responseJson);
             JsonNode flavorsNode = root.path("flavors");
@@ -287,26 +298,26 @@ public class OpenStackService {
     }
 
     // =====================================================================
-    // PERSONAL / ORGANIZATION / ADD_RESOURCE (per-request region)
+    // PERSONAL / ORGANIZATION / ADD_RESOURCE
     // =====================================================================
     @PreAuthorize("hasRole('create_openstack_instance')")
     public InstanceResponse provisionPersonal(InstanceRequest req, String userId, String region) {
         String taskId = UUID.randomUUID().toString();
         provisionPersistService.createProvisioning(taskId, 1);
 
-        Map<String, Object> body = new HashMap<>();
+        var body = new java.util.HashMap<String, Object>();
         body.put("base_vol_id", req.getBase_vol_id());
         body.put("vol_size",    req.getVol_size());
         body.put("flavor_id",   req.getFlavor_id());
         body.put("vol_type",    req.getVol_type());
 
-        String endpoint = UriComponentsBuilder.fromPath(
-                        withRegion(region, Constants.OPENSTACK.ENDPOINT.PROVISION_PERSONAL))
+        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.PROVISION_PERSONAL)
                 .queryParam("identifier", taskId)
                 .queryParam("user_id", userId)
-                .build().toUriString();
+                .build()
+                .toUriString();
 
-        String raw = strategy().callApi(HttpMethod.POST, endpoint, body);
+        String raw = strategy().callApi(HttpMethod.POST, endpoint, body, region);
 
         return InstanceResponse.builder()
                 .task_id(taskId)
@@ -321,20 +332,20 @@ public class OpenStackService {
         String taskId = UUID.randomUUID().toString();
         provisionPersistService.createProvisioning(taskId, 1);
 
-        Map<String, Object> body = new HashMap<>();
+        var body = new java.util.HashMap<String, Object>();
         body.put("base_vol_id", req.getBase_vol_id());
         body.put("vol_size",    req.getVol_size());
         body.put("flavor_id",   req.getFlavor_id());
         body.put("vol_type",    req.getVol_type());
-        body.put("count", 1);
+        body.put("count",       1);
 
-        String endpoint = UriComponentsBuilder.fromPath(
-                        withRegion(region, Constants.OPENSTACK.ENDPOINT.PROVISION_ORG))
+        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.PROVISION_ORG)
                 .queryParam("identifier", taskId)
                 .queryParam("user_id", userId)
-                .build().toUriString();
+                .build()
+                .toUriString();
 
-        String raw = strategy().callApi(HttpMethod.POST, endpoint, body);
+        String raw = strategy().callApi(HttpMethod.POST, endpoint, body, region);
 
         return InstanceResponse.builder()
                 .task_id(taskId)
@@ -345,25 +356,54 @@ public class OpenStackService {
     }
 
     @PreAuthorize("hasRole('create_openstack_instance')")
-    public InstanceResponse addResource(InstanceRequest req, String userId, String region) {
+    public InstanceResponse addResourceForPersonal(InstanceRequest req, String userId, String region) {
         String taskId = UUID.randomUUID().toString();
         int count = Math.max(1, Math.toIntExact(Optional.ofNullable(req.getCount()).orElse(1L)));
         provisionPersistService.createProvisioning(taskId, count);
 
-        Map<String, Object> body = new HashMap<>();
+        var body = new java.util.HashMap<String, Object>();
         body.put("base_vol_id", req.getBase_vol_id());
         body.put("vol_size",    req.getVol_size());
         body.put("flavor_id",   req.getFlavor_id());
         body.put("vol_type",    req.getVol_type());
         body.put("count",       count);
 
-        String endpoint = UriComponentsBuilder.fromPath(
-                        withRegion(region, Constants.OPENSTACK.ENDPOINT.ADD_RESOURCE))
+        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.ADD_RESOURCE_FOR_PERSONAL)
                 .queryParam("identifier", taskId)
                 .queryParam("user_id", userId)
-                .build().toUriString();
+                .build()
+                .toUriString();
 
-        String raw = strategy().callApi(HttpMethod.POST, endpoint, body);
+        String raw = strategy().callApi(HttpMethod.POST, endpoint, body, region);
+
+        return InstanceResponse.builder()
+                .task_id(taskId)
+                .status(TaskStatus.PROVISIONING.name())
+                .message("Infra is being provisioned (add_resource)")
+                .raw(raw)
+                .build();
+    }
+
+    @PreAuthorize("hasRole('create_openstack_instance')")
+    public InstanceResponse addResource(InstanceRequest req, String userId, String region) {
+        String taskId = UUID.randomUUID().toString();
+        int count = Math.max(1, Math.toIntExact(Optional.ofNullable(req.getCount()).orElse(1L)));
+        provisionPersistService.createProvisioning(taskId, count);
+
+        var body = new java.util.HashMap<String, Object>();
+        body.put("base_vol_id", req.getBase_vol_id());
+        body.put("vol_size",    req.getVol_size());
+        body.put("flavor_id",   req.getFlavor_id());
+        body.put("vol_type",    req.getVol_type());
+        body.put("count",       count);
+
+        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.ADD_RESOURCE)
+                .queryParam("identifier", taskId)
+                .queryParam("user_id", userId)
+                .build()
+                .toUriString();
+
+        String raw = strategy().callApi(HttpMethod.POST, endpoint, body, region);
 
         return InstanceResponse.builder()
                 .task_id(taskId)
@@ -374,27 +414,41 @@ public class OpenStackService {
     }
 
     // =====================================================================
-    // noVNC (per-request region) – nếu backend yêu cầu đi qua region
+    // noVNC
     // =====================================================================
     @PreAuthorize("hasRole('get_openstack_noVNC')")
     public NoVNCResponse getConsoleUrl(NoVNCRequest noVNCRequest, String region) {
         try {
             String endpoint = UriComponentsBuilder
-                    .fromPath(withRegion(region, Constants.OPENSTACK.ENDPOINT.NOVNC))
+                    .fromPath(Constants.OPENSTACK.ENDPOINT.NOVNC)
                     .buildAndExpand(noVNCRequest.getInstance_id())
                     .toUriString();
 
-            String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null);
+            String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null, region);
 
             JsonNode root = objectMapper.readTree(responseJson);
             String url = root.path("console").path("url").asText();
             if (url == null || url.isEmpty()) throw new AppException(ErrorCode.API_VNC_ERR);
 
-            return NoVNCResponse.builder().url(url).build();
+            // ✅ Hậu xử lý URL
+            try {
+                java.net.URI original = new java.net.URI(url);
+                String newUrl = String.format(
+                        "https://cloud.mobifone.vn:%d/hn02%s",
+                        original.getPort(),
+                        original.getRawPath() + (original.getRawQuery() != null ? "?" + original.getRawQuery() : "")
+                );
+
+                return NoVNCResponse.builder().url(newUrl).build();
+            } catch (Exception ex) {
+                log.error("Failed to rewrite noVNC URL {}: {}", url, ex.getMessage());
+                throw new AppException(ErrorCode.API_VNC_ERR);
+            }
 
         } catch (Exception e) {
             log.error("Failed to get console URL for server {}: {}", noVNCRequest.getInstance_id(), e.getMessage());
             throw new AppException(ErrorCode.API_VNC_ERR);
         }
     }
+
 }

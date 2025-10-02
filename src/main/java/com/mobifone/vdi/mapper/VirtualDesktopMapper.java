@@ -60,5 +60,9 @@ public interface VirtualDesktopMapper {
     @Mapping(target = "idInstance", ignore = true)
     @Mapping(target = "hasGPU", ignore = true)
     @Mapping(target = "typeVirtualDesktop", ignore = true)
+    @Mapping(target = "password", ignore = true)
+    @Mapping(target = "domainName", ignore = true)
+    @Mapping(target = "domainOu", ignore = true)
+    @Mapping(target = "domainAccountUsername", ignore = true)
     void updateVirtualDesktop(@MappingTarget VirtualDesktop entity, VirtualDesktopUpdateRequest request);
 }

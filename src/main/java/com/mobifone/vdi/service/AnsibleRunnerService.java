@@ -26,7 +26,6 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -178,6 +177,127 @@ public class AnsibleRunnerService {
         return execAndWait(jobId, cmd, logFile);
     }
 
+    // ===== DC post bootstrap (OU/Group/User trên DC sau khi promote) =====
+    // Tạo inventory 1 host Windows (WinRM NAT)
+    private String buildWinInventory(String ip, int port, String user, String pass) {
+        return "[windows]\n" + ip + "\n\n[windows:vars]\n" +
+                "ansible_user=" + user + "\n" +
+                "ansible_password=" + pass + "\n" +
+                "ansible_port=" + port + "\n" +
+                "ansible_connection=winrm\n" +
+                "ansible_winrm_scheme=http\n" +
+                "ansible_winrm_transport=basic\n" +
+                "ansible_winrm_server_cert_validation=ignore\n" +
+                "ansible_winrm_read_timeout_sec=900\n" +
+                "ansible_winrm_operation_timeout_sec=120\n";
+    }
+
+    // Render 1 playbook chạy đúng 1 role + vars
+    private String buildRolePlaybook(String role, Map<String,Object> vars) {
+        StringBuilder rolesYaml = new StringBuilder();
+        rolesYaml.append("  - role: ").append(role).append("\n");
+        if (vars != null) {
+            for (Map.Entry<String,Object> e : vars.entrySet()) {
+                rolesYaml.append("    ")
+                        .append(e.getKey())
+                        .append(": ")
+                        .append(yamlScalar(e.getValue()))
+                        .append("\n");
+            }
+        }
+        return "- hosts: windows\n" +
+                "  gather_facts: yes\n" +
+                "  roles:\n" + rolesYaml;
+    }
+
+    /**
+     * Chạy role theo mẫu “viết file → export ROLES_PATH → ansible-playbook”.
+     * logTag dùng để đặt tên file log cho dễ tra.
+     */
+    private boolean runRoleOnce(String subJobId,
+                                String ip, int port, String user, String pass,
+                                String roleName, Map<String,Object> vars,
+                                String logTag) {
+        try {
+            // 1) Upload inventory + playbook
+            String invPath = remoteJobsDir + "/inventory_" + subJobId + ".ini";
+            String pbPath  = remoteJobsDir + "/playbook_"  + subJobId + ".yml";
+            writeRemoteFile(invPath, buildWinInventory(ip, port, user, pass));
+            writeRemoteFile(pbPath,  buildRolePlaybook(roleName, vars));
+
+            // 2) Đảm bảo thư mục logs tồn tại
+            execLocal(String.format(
+                    "ssh %s -p %d %s@%s \"mkdir -p %s\"",
+                    SSH_OPTS, remotePort, remoteUser, remoteHost, remoteLogsDir
+            ));
+
+            // 3) Chạy ansible-playbook + export ROLES_PATH
+            String logFile = remoteLogsDir + "/" + subJobId + "_" + logTag + ".log";
+            String cmd = String.format(
+                    "ssh %s -p %d %s@%s \"export ANSIBLE_ROLES_PATH='%s'; " +
+                            "echo '===== %s START =====' >> %s; " +
+                            "{ ansible-playbook -i %s %s >> %s 2>&1; rc=$?; } ; " +
+                            "echo '===== %s END (exit='$rc') =====' >> %s; exit $rc\"",
+                    SSH_OPTS, remotePort, remoteUser, remoteHost, remoteRolesDir,
+                    logTag.toUpperCase(), logFile,
+                    invPath, pbPath, logFile,
+                    logTag.toUpperCase(), logFile
+            );
+
+            return execAndWait(subJobId, cmd, logFile);
+        } catch (Exception ex) {
+            log.error("runRoleOnce error ({})", roleName, ex);
+            return false;
+        }
+    }
+
+    public boolean runDcPostBootstrap(String subJobId, String ip, int port,
+                                      String user, String pass,
+                                      String domainName, String ouName,
+                                      String adminGroupName, String adminUserName, String adminUserPass) {
+        Map<String,Object> v = new HashMap<>();
+        v.put("domain_name",       domainName);
+        v.put("ou_name",           ouName);
+        v.put("admin_group_name",  adminGroupName);
+        v.put("admin_user_name",   adminUserName);
+        v.put("admin_user_pass",   adminUserPass);
+        // role = dc_post_bootstrap
+        return runRoleOnce(subJobId, ip, port, user, pass,
+                "dc_post_bootstrap", v, "dc_post_bootstrap");
+    }
+
+    public boolean runAdAccountBootstrap(String subJobId, String ip, int port,
+                                         String user, String pass,
+                                         String domainName, String ouName,
+                                         String groupName, String newUser, String newPass) {
+        Map<String,Object> v = new HashMap<>();
+        v.put("domain_name",   domainName);
+        v.put("ou_name",       ouName);
+        v.put("group_name",    groupName);
+        v.put("new_user_name", newUser);
+        v.put("new_user_pass", newPass);
+        // role = ad_account_bootstrap
+        return runRoleOnce(subJobId, ip, port, user, pass,
+                "ad_account_bootstrap", v, "ad_account_bootstrap");
+    }
+
+    public boolean runJoinDomain(String subJobId, String ip, int port,
+                                 String localAdmin, String localPass,
+                                 String domainName, String dcIp,
+                                 String domainUser, String domainPass,
+                                 String rdpGrantUser) {
+        Map<String,Object> v = new HashMap<>();
+        v.put("win_version",          "11");       // có thể tham số hoá nếu cần
+        v.put("domain_name",          domainName);
+        v.put("domain_controller_ip", dcIp);
+        v.put("domain_user",          domainUser);
+        v.put("domain_password",      domainPass);
+        v.put("rdp_grant_user",       rdpGrantUser);
+        // role = join_domain
+        return runRoleOnce(subJobId, ip, port, localAdmin, localPass,
+                "join_domain", v, "join_domain");
+    }
+
     // === Helper: render giá trị an toàn cho YAML ===
     private String yamlScalar(Object v) {
         if (v == null) return "''";                // chuỗi rỗng
@@ -199,6 +319,92 @@ public class AnsibleRunnerService {
         return "'" + s + "'";
     }
 
+    /** SSH chạy gọn, không log file, trả true/false theo exit code */
+    private boolean execAndStream(String jobId, java.util.List<String> args, long timeoutMinutes) {
+        try {
+            ProcessBuilder pb = new ProcessBuilder(args);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            RUNNING.put(jobId, p);
+
+            Thread t = new Thread(() -> {
+                try (var br = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(p.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                    String line;
+                    while ((line = br.readLine()) != null) {
+                        log.info("[{}] {}", jobId, line);
+                    }
+                } catch (Exception ignored) {}
+            }, "ssh-stream-" + jobId);
+            t.setDaemon(true);
+            t.start();
+
+            boolean finished = p.waitFor(timeoutMinutes, java.util.concurrent.TimeUnit.MINUTES);
+            if (!finished) {
+                try { p.destroyForcibly(); } catch (Exception ignored) {}
+                RUNNING.remove(jobId);
+                log.warn("[{}] timeout khi chạy SSH", jobId);
+                return false;
+            }
+
+            int exit = p.exitValue();
+            RUNNING.remove(jobId);
+            log.info("[{}] SSH exit={}", jobId, exit);
+            return exit == 0;
+        } catch (Exception e) {
+            log.error("execAndStream(args) error", e);
+            return false;
+        }
+    }
+    /**
+     * Kiểm tra TCP connect từ Ansible host tới host:port.
+     * Log theo thời gian thực từng lần thử (INFO), không ghi log ra file từ xa.
+     */
+    public boolean waitPortOpenFromAnsibleHost(String host, int port,
+                                               int attempts, int delaySeconds, int timeoutSeconds) {
+        log.info("NAT wait-port START: {}:{} (attempts={}, delay={}s, timeoutPerTry={}s)",
+                host, port, attempts, delaySeconds, timeoutSeconds);
+
+        // Script chạy TRÊN máy Ansible (Ubuntu). Không dùng seq để tránh phụ thuộc.
+        String remoteScript = String.format(
+                "PATH=/usr/sbin:/usr/bin:/sbin:/bin; " +
+                        "i=1; " +
+                        "while [ \"$i\" -le %d ]; do " +
+                        "  echo \"[portcheck] try $i/%d -> %s:%d\"; " +
+                        "  if command -v nc >/dev/null 2>&1; then " +
+                        "    echo \"[portcheck] using nc -z -w %d\"; " +
+                        "    if nc -z -w %d %s %d; then echo \"[portcheck] OK\"; exit 0; else echo \"[portcheck] not open\"; fi; " +
+                        "  else " +
+                        "    echo \"[portcheck] using /dev/tcp with timeout %ds\"; " +
+                        "    if timeout %d bash -lc 'exec 3<>/dev/tcp/%s/%d'; then echo \"[portcheck] OK\"; exit 0; else echo \"[portcheck] not open\"; fi; " +
+                        "  fi; " +
+                        "  i=$((i+1)); sleep %d; " +
+                        "done; " +
+                        "echo \"[portcheck] GIVEUP after %d tries\"; " +
+                        "exit 1",
+                attempts, attempts, host, port,
+                timeoutSeconds,
+                timeoutSeconds, host, port,
+                timeoutSeconds,
+                timeoutSeconds, host, port,
+                delaySeconds,
+                attempts
+        );
+
+        // Gọi SSH bằng danh sách tham số (không đi qua cmd.exe/bash local)
+        java.util.List<String> cmd = new java.util.ArrayList<>();
+        cmd.add("ssh");
+        cmd.add("-o"); cmd.add("StrictHostKeyChecking=no");
+        cmd.add("-o"); cmd.add("UserKnownHostsFile=/dev/null");
+        cmd.add("-p"); cmd.add(String.valueOf(remotePort));
+        cmd.add(remoteUser + "@" + remoteHost);
+        cmd.add("bash"); cmd.add("-lc"); cmd.add(remoteScript);
+
+        String jobId = "portcheck_" + host + "_" + port;
+        boolean ok = execAndStream(jobId, cmd, timeoutMinutes);
+        log.info("NAT wait-port END: {}:{} -> {}", host, port, ok ? "READY" : "NOT READY");
+        return ok;
+    }
 
 
     /** Cài 1 app theo AppDefinition (role) */
@@ -218,7 +424,9 @@ public class AnsibleRunnerService {
                 "ansible_connection=winrm\n" +
                 "ansible_winrm_scheme=http\n" +
                 "ansible_winrm_transport=basic\n" +
-                "ansible_winrm_server_cert_validation=ignore\n";
+                "ansible_winrm_server_cert_validation=ignore\n"+
+                "ansible_winrm_read_timeout_sec=900\n"+
+                "ansible_winrm_operation_timeout_sec=120\n";
         String invPath = remoteJobsDir + "/inventory_" + subJobId + ".ini";
         try { writeRemoteFile(invPath, inv); } catch (Exception e) { return false; }
 

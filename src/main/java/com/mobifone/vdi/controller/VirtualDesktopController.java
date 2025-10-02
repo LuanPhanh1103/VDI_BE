@@ -27,10 +27,11 @@ public class VirtualDesktopController {
             @RequestParam(value = "projectId", required = false) String projectId,
             @RequestParam(defaultValue = "") String search,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int limit
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(name="region", defaultValue="yha_yoga") String region
     ) {
         return ApiResponse.<PagedResponse<VirtualDesktopResponse>>builder()
-                .result(virtualDesktopService.getVDIsForCurrentUser(projectId, search, page, limit))
+                .result(virtualDesktopService.getVDIsForCurrentUser(projectId, search, page, limit, region))
                 .build();
     }
 
