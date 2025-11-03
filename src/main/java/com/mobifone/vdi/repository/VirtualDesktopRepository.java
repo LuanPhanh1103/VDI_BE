@@ -36,51 +36,56 @@ public interface VirtualDesktopRepository extends JpaRepository<VirtualDesktop, 
 
 
     // ADMIN: tất cả VDI (+ optional projectId, search)
+    // ALL
     @EntityGraph(attributePaths = {"project", "user"})
     @Query("""
     select vd from VirtualDesktop vd
+    left join vd.user u
     where ( :projectId is null or vd.project.id = :projectId )
-      and ( :region is null or vd.region = :region )
-      and ( :kw = '' or lower(vd.name)    like lower(concat('%', :kw, '%'))
-                    or lower(vd.ipLocal)  like lower(concat('%', :kw, '%'))
-                    or lower(vd.ipPublic) like lower(concat('%', :kw, '%')) )
-""")
+      and ( :region   is null or vd.region = :region )
+      and ( :kw = ''  or lower(vd.name)   like concat('%', :kw, '%')
+                       or lower(vd.ipLocal) like concat('%', :kw, '%')
+                       or lower(coalesce(u.email, '')) like concat('%', :kw, '%') )
+    """)
     Page<VirtualDesktop> searchAllVDIs(@Param("projectId") String projectId,
-                                       @Param("kw") String kw,
+                                       @Param("kw") String kwLower,
                                        @Param("region") String region,
                                        Pageable pageable);
 
-    // OWNER: chỉ các VDI thuộc những project mình làm chủ
+    // OWNER
     @EntityGraph(attributePaths = {"project", "user"})
     @Query("""
     select vd from VirtualDesktop vd
+    left join vd.user u
     where vd.project.id in :projectIds
       and ( :projectId is null or vd.project.id = :projectId )
-      and ( :region is null or vd.region = :region )
-      and ( :kw = '' or lower(vd.name)    like lower(concat('%', :kw, '%'))
-                    or lower(vd.ipLocal)  like lower(concat('%', :kw, '%'))
-                    or lower(vd.ipPublic) like lower(concat('%', :kw, '%')) )
-""")
+      and ( :region   is null or vd.region = :region )
+      and ( :kw = ''  or lower(vd.name)   like concat('%', :kw, '%')
+                       or lower(vd.ipLocal) like concat('%', :kw, '%')
+                       or lower(coalesce(u.email, '')) like concat('%', :kw, '%') )
+    """)
     Page<VirtualDesktop> searchVDIsInProjects(@Param("projectIds") Collection<String> projectIds,
                                               @Param("projectId") String projectId,
-                                              @Param("kw") String kw,
+                                              @Param("kw") String kwLower,
                                               @Param("region") String region,
                                               Pageable pageable);
 
-    // MEMBER: chỉ VDI gán cho chính mình
+    // MEMBER
     @EntityGraph(attributePaths = {"project", "user"})
     @Query("""
     select vd from VirtualDesktop vd
+    left join vd.user u
     where vd.user.id = :uid
       and ( :projectId is null or vd.project.id = :projectId )
-      and ( :region is null or vd.region = :region )
-      and ( :kw = '' or lower(vd.name)    like lower(concat('%', :kw, '%'))
-                    or lower(vd.ipLocal)  like lower(concat('%', :kw, '%'))
-                    or lower(vd.ipPublic) like lower(concat('%', :kw, '%')) )
-""")
+      and ( :region   is null or vd.region = :region )
+      and ( :kw = ''  or lower(vd.name)   like concat('%', :kw, '%')
+                       or lower(vd.ipLocal) like concat('%', :kw, '%')
+                       or lower(coalesce(u.email, '')) like concat('%', :kw, '%') )
+    """)
     Page<VirtualDesktop> searchAssignedVDIs(@Param("uid") String uid,
                                             @Param("projectId") String projectId,
-                                            @Param("kw") String kw,
+                                            @Param("kw") String kwLower,
                                             @Param("region") String region,
                                             Pageable pageable);
+
 }

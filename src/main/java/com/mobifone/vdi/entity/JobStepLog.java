@@ -24,7 +24,7 @@ public class JobStepLog {
     @Column(length = 16)
     String status;                   // INFO|SUCCESS|FAILED
 
-    @Column(columnDefinition = "TEXT")  // <--- CHO PHÉP LÂU DÒNG
+    @Column(columnDefinition = "LONGTEXT")  // <--- CHO PHÉP LÂU DÒNG
     String detail;
 
     LocalDateTime createdAt;

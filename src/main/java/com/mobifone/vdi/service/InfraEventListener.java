@@ -32,27 +32,38 @@ public class InfraEventListener {
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
             .configure(com.fasterxml.jackson.core.JsonParser.Feature.ALLOW_SINGLE_QUOTES, true);
 
-    @RabbitListener(queues = InfraRabbitConfig.INFRA_QUEUE,
-            containerFactory = "infraListenerFactory")
+    // thêm helper mới
+    private String sanitizeForJson(String s) {
+        if (s == null) return null;
+        // bỏ ANSI
+        String noAnsi = s.replaceAll("\\u001B\\[[;\\d]*m", "");
+        // bỏ các escape kiểu \x1b, \x1B, \xNN
+        String noHexEsc = noAnsi.replaceAll("\\\\x[0-9A-Fa-f]{2}", "");
+        return noHexEsc;
+    }
+
+    private JsonNode tryParseJsonStrict(String s) {
+        try { return om.readTree(s); } catch (Exception ignored) { return null; }
+    }
+
+    @RabbitListener(queues = InfraRabbitConfig.INFRA_QUEUE, containerFactory = "infraListenerFactory")
     public void onInfra(Message msg, Channel channel) throws Exception {
         long tag = msg.getMessageProperties().getDeliveryTag();
         String body = new String(msg.getBody(), StandardCharsets.UTF_8);
+
         try {
             log.info("[InfraEvent] raw body: {}", body);
 
-            String jsonCandidate = extractJson(body);
+            // 0) Luôn sanitize trước
+            String cleaned = sanitizeForJson(body);
 
-            // Thử parse JSON
-            JsonNode node = tryParseJson(body);
-
-            // ✅ THÊM MỚI: pattern DELETE RESULT
-            // ví dụ: {"identifier": "098765432", "result": true}
-            if (node != null && node.has("identifier") && node.has("result") && !node.has("created_resources")) {
-                String taskId = node.path("identifier").asText(null);
-                boolean ok = node.path("result").asBoolean(false);
+            // 1) Trường hợp delete-result chuẩn JSON: {"identifier": "...", "result": true}
+            JsonNode nodeWhole = tryParseJson(cleaned); // nới lỏng (ALLOW_SINGLE_QUOTES đã bật)
+            if (nodeWhole != null && nodeWhole.has("identifier") && nodeWhole.has("result") && !nodeWhole.has("created_resources")) {
+                String taskId = nodeWhole.path("identifier").asText(null);
+                boolean ok = nodeWhole.path("result").asBoolean(false);
                 if (taskId != null) {
-                    // Lưu kết quả delete (rawMessage = body)
-                    persistService.handleDeleteResult(taskId, ok, body);
+                    persistService.handleDeleteResult(taskId, ok, body); // lưu raw để trace
                 } else {
                     log.warn("Delete-result message missing identifier");
                 }
@@ -60,39 +71,45 @@ public class InfraEventListener {
                 return;
             }
 
-            if (jsonCandidate != null) {
-                // SUCCESS path (JSON)
+            // 2) Thử cắt phần JSON ở trong text (nếu có)
+            String jsonCandidate = extractJson(cleaned);
+            JsonNode jsonCandidateNode = jsonCandidate != null ? tryParseJsonStrict(jsonCandidate) : null;
+
+            // 2a) SUCCESS chuẩn: có "created_resources"
+            if (jsonCandidateNode != null && jsonCandidateNode.has("created_resources")) {
                 InfraSuccessEvent event = om.readValue(jsonCandidate, InfraSuccessEvent.class);
                 if (event.getIdentifier() != null) {
                     persistService.handleSuccess(event);
-                    // ✅ LẤY ENTITY & COMPLETE ĐÚNG CHỮ KÝ 2 THAM SỐ
                     persistService.findEntity(event.getIdentifier())
                             .ifPresent(t -> signalBus.complete(event.getIdentifier(), t));
                 } else {
                     log.warn("Success event missing identifier");
                 }
-            } else {
-                // ERROR path (text thường)
-                String taskId = extractIdentifier(body);
-                String error = extractErrorMessage(body);
-                if (taskId != null) {
-                    persistService.handleError(taskId, error);
-                    // ✅ LẤY ENTITY & COMPLETE
-                    persistService.findEntity(taskId)
-                            .ifPresent(t -> signalBus.complete(taskId, t));
-                } else {
-                    log.warn("Error message không có identifier → bỏ qua");
-                }
+                channel.basicAck(tag, false);
+                return;
             }
 
+            // 3) Fallback (ERROR): bất kỳ tình huống còn lại
+            String taskId = extractIdentifier(cleaned);             // lấy bằng regex từ text
+            String error  = extractErrorMessage(cleaned);           // đã strip ANSI + clamp
+            if (taskId != null) {
+                persistService.handleError(taskId, error);
+                persistService.findEntity(taskId)
+                        .ifPresent(t -> signalBus.complete(taskId, t));
+            } else {
+                // Không lấy được identifier thì vẫn ack để tránh lặp, nhưng log cảnh báo
+                log.warn("Error message missing identifier → cannot persist; body={}", cleaned);
+            }
             channel.basicAck(tag, false);
+            return;
         } catch (Exception ex) {
-            log.error("Infra message processing failed", ex);
-            // có thể “đánh thức” tương lai với lỗi, nếu bạn muốn Orchestrator dừng ngay:
-            // signalBus.completeExceptionally("unknown", ex);
-            channel.basicNack(tag, false, false);
+            // ĐỪNG nack/requeue=false rồi bỏ qua → sẽ mất cơ hội lưu error
+            // Ở đây chỉ log và ack để không lặp vô hạn; nếu muốn có DLQ, cấu hình ở broker/policy.
+            log.error("Infra message processing failed (final fallback ack). body={}", body, ex);
+            channel.basicAck(tag, false);
         }
     }
+
 
     private JsonNode tryParseJson(String s) {
         try { return om.readTree(s); } catch (Exception ignored) { return null; }

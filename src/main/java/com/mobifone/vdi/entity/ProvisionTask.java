@@ -28,7 +28,7 @@ public class ProvisionTask extends AbstractAuditingEntity<String> implements Ser
     @Column(name = "status", length = 32, nullable = false)
     TaskStatus status;                                  // PROVISIONING | SUCCESS | FAILED
 
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "LONGTEXT")
     String errorMessage;
 
     @Column(name="instance_floating_pairs", columnDefinition = "LONGTEXT")

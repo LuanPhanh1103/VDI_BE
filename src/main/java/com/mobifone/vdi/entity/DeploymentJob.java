@@ -27,7 +27,7 @@ public class DeploymentJob {
     Integer successVms;
     Integer failedVms;
 
-    @Column(columnDefinition = "TEXT")
+    @Column(columnDefinition = "LONGTEXT")
     String message;
 
     LocalDateTime createdAt;
