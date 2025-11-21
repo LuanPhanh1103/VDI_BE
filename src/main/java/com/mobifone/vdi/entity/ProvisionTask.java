@@ -24,6 +24,9 @@ public class ProvisionTask extends AbstractAuditingEntity<String> implements Ser
     @Column(name="task_id", unique = true, nullable = false, length = 64)
     String taskId;                                      // UUID string
 
+    @Column(name = "infra_id")
+    String infraId;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 32, nullable = false)
     TaskStatus status;                                  // PROVISIONING | SUCCESS | FAILED

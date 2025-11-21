@@ -31,6 +31,7 @@ public class VirtualDesktop extends AbstractAuditingEntity<String> implements Se
 
     @Column(unique = true)
     String portPublic;
+
     @Column(unique = true)
     String portWinRmPublic;
 
@@ -55,11 +56,15 @@ public class VirtualDesktop extends AbstractAuditingEntity<String> implements Se
     HasGPU hasGPU;
 
     String status;                 // CREATED|NAT_ERROR|APP_ERROR|READY
+
     Boolean winRmDisabled;
     String jobId;
 
     @Lob
     String ansiblePlan;
+
+    @Column(name = "infra_id")
+    String infraId;
 
     @ManyToOne
     @JoinColumn(name = "project_id")

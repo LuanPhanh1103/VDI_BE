@@ -5,20 +5,19 @@ public class Constants {
     public interface OPENSTACK {
         interface ENDPOINT {
             // tất cả là relative path
-            String AUTHENTICATION      = "/v3/auth/tokens";
+            String AUTHENTICATION      = "/auth";
             String IMAGES              = "/images";
             String FLAVORS             = "/flavors";
 
             String PROVISION_PERSONAL  = "/vdi/provision_infra/personal";
             String PROVISION_ORG       = "/vdi/provision_infra/organization";
-            String ADD_RESOURCE        = "/vdi/add_resource/organization";
+            String ADD_RESOURCE_ORG      = "/vdi/add_resource/{infra_id}/organization";
+            String ADD_RESOURCE_PERSONAL = "/vdi/add_resource/{infra_id}/personal";
 
-            String ADD_RESOURCE_FOR_PERSONAL        = "/vdi/add_resource/personal";
+            String DELETE_RESOURCE        = "/vdi/delete_resource/{infra_id}/{resource_id}";
+            String DESTROY_INFRA          = "/vdi/destroy_infra/{infra_id}";
 
-            String DELETE_RESOURCE     = "/vdi/delete_resource/{idInstance}";
-            String DESTROY_INFRA   = "/vdi/destroy_infra";
-
-            String VOLUMES_V3          = "/v3/{projectId}/volumes";
+            String VOLUMES_V3          = "/{projectId}/volumes";
             String NOVNC               = "/servers/{instanceId}/novnc-console"; // nếu cần
         }
 
@@ -26,9 +25,5 @@ public class Constants {
         String NAME_SERVICE = "OPENSTACK";
     }
 
-    public interface TYPE_QUOTA {
-        interface STORAGE { String QUOTA = "quota"; }
-        interface HOSTING { String PLAN  = "plan";  }
-    }
 }
 

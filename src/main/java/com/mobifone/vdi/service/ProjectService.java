@@ -6,6 +6,7 @@ import com.mobifone.vdi.dto.response.InstanceResponse;
 import com.mobifone.vdi.dto.response.PagedResponse;
 import com.mobifone.vdi.dto.response.ProjectResponse;
 import com.mobifone.vdi.entity.Project;
+import com.mobifone.vdi.entity.VirtualDesktop;
 import com.mobifone.vdi.entity.enumeration.ProjectRole;
 import com.mobifone.vdi.exception.AppException;
 import com.mobifone.vdi.exception.ErrorCode;
@@ -132,21 +133,16 @@ public class ProjectService {
     public InstanceResponse softDelete(String projectId, String region) {
         Project project = projectRepo.findById(projectId)
                 .orElseThrow(() -> new AppException(ErrorCode.PROJECT_NOT_EXISTED));
+
         String ownerUserId = project.getOwner().getId();
-        return openStackService.requestDestroyInfra(ownerUserId, projectId, region);
-    }
 
-    /** Cascade chính: chỉ chạm ProjectRepo; các phần khác gọi qua service */
-    @Transactional
-    public void cascadeMarkProjectDeleted(String projectId) {
-        Project project = projectRepo.findById(projectId)
-                .orElseThrow(() -> new AppException(ErrorCode.PROJECT_NOT_EXISTED));
-        project.setIsDeleted(1L);
-        projectRepo.save(project);
+        // 🔍 Lấy 1 VDI bất kỳ để biết infraId
+        String infraId = virtualDesktopService.findAnyByProject(projectId, region)
+                .map(VirtualDesktop::getInfraId)
+                .orElseThrow(() -> new AppException(ErrorCode.ORCHESTRATOR_SERVICE_IP_PUBLIC_ORG));
 
-        virtualDesktopService.markAllDeletedByProject(projectId);
-        userProjectService.softDeleteAllByProject(projectId);
-        userService.resetPasswordsForUsersInProject(projectId); // thực hiện trong UserService
+        // 🔥 Destroy đúng infraId
+        return openStackService.requestDestroyInfra(ownerUserId, projectId, infraId, region);
     }
 
     // (nếu cần dùng bên khác, thêm)

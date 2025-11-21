@@ -28,4 +28,8 @@ public class InstanceRequest {
 
     @NotNull
     Long count;
+
+    String projectId;
+
+    String region;
 }

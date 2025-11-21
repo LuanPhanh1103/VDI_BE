@@ -23,7 +23,7 @@ public class ProvisionUnifiedController {
     @PostMapping("/{mode}")
     public ApiResponse<Map<String, String>> provision(
             @PathVariable String mode,
-            @RequestParam(name="region", defaultValue="yha_yoga") String region,  // <== thêm
+            @RequestParam(name="region", defaultValue="default_cluster") String region,  // <== thêm
             @Valid @RequestBody ProvisionAndConfigureRequest req) {
 
         String jobId = orchestrator.submit(mode, req, region);  // <== truyền region

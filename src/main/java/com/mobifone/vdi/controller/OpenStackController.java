@@ -25,7 +25,7 @@ public class OpenStackController {
 
     @GetMapping("/images")
     ApiResponse<List<ImagesResponse>> images(
-            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
+            @RequestParam(name="region", defaultValue="default_cluster") String region) {
         return ApiResponse.<List<ImagesResponse>>builder()
                 .result(openStackService.getImagesAsPermissions(region))
                 .build();
@@ -35,7 +35,7 @@ public class OpenStackController {
     public ApiResponse<PagedResponse<FlavorsResponse>> flavors(
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int limit,
-            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
+            @RequestParam(name="region", defaultValue="default_cluster") String region) {
         return ApiResponse.<PagedResponse<FlavorsResponse>>builder()
                 .result(openStackService.getFlavorsAsPermissions(page, limit, region))
                 .build();
@@ -46,7 +46,7 @@ public class OpenStackController {
     @PostMapping("/instance/personal")
     public ApiResponse<InstanceResponse> provisionPersonal(
             @RequestParam(name="user_id") String userId,
-            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestParam(name="region", defaultValue="default_cluster") String region,
             @RequestBody InstanceRequest request) {
         return ApiResponse.<InstanceResponse>builder()
                 .result(openStackService.provisionPersonal(request, userId, region))
@@ -58,7 +58,7 @@ public class OpenStackController {
     @PostMapping("/instance/organization")
     public ApiResponse<InstanceResponse> provisionOrganization(
             @RequestParam(name="user_id") String userId,
-            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestParam(name="region", defaultValue="default_cluster") String region,
             @RequestBody InstanceRequest request) {
         return ApiResponse.<InstanceResponse>builder()
                 .result(openStackService.provisionOrganization(request, userId, region))
@@ -70,7 +70,7 @@ public class OpenStackController {
     @PostMapping("/instance/add-resource")
     public ApiResponse<InstanceResponse> addResource(
             @RequestParam(name="user_id") String userId,
-            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestParam(name="region", defaultValue="default_cluster") String region,
             @RequestBody InstanceRequest request) {
         return ApiResponse.<InstanceResponse>builder()
                 .result(openStackService.addResource(request, userId, region))
@@ -82,7 +82,7 @@ public class OpenStackController {
     public ApiResponse<InstanceResponse> deleteInstance(
             @PathVariable String idInstance,
             @RequestParam("user_id") String userId,
-            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
+            @RequestParam(name="region", defaultValue="default_cluster") String region) {
         InstanceResponse res = openStackService.requestDeleteInstance(idInstance, userId, region);
         return ApiResponse.<InstanceResponse>builder().result(res).build();
     }
@@ -91,7 +91,7 @@ public class OpenStackController {
     @LogApi
     @PostMapping("/noVNC")
     ApiResponse<NoVNCResponse> noVNC(
-            @RequestParam(name="region", defaultValue="yha_yoga") String region,
+            @RequestParam(name="region", defaultValue="default_cluster") String region,
             @RequestBody NoVNCRequest request) {
         return ApiResponse.<NoVNCResponse>builder()
                 .result(openStackService.getConsoleUrl(request, region))
@@ -105,7 +105,7 @@ public class OpenStackController {
             @RequestParam("project_id") String projectId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "10") int limit,
-            @RequestParam(name="region", defaultValue="yha_yoga") String region) {
+            @RequestParam(name="region", defaultValue="default_cluster") String region) {
         return ApiResponse.<PagedResponse<VolumeSummary>>builder()
                 .result(openStackService.getVolumesAsPermissions(projectId, page, limit, region))
                 .build();

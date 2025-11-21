@@ -1,6 +1,5 @@
 package com.mobifone.vdi.service;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mobifone.vdi.dto.response.InfraSuccessEvent;
 import com.mobifone.vdi.entity.ProvisionTask;
@@ -14,6 +13,7 @@ import lombok.experimental.FieldDefaults;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.util.*;
@@ -73,7 +73,7 @@ public class ProvisionPersistService {
     }
 
     // Xử lý result từ MQ cho cả delete instance & destroy infra
-    @org.springframework.transaction.annotation.Transactional
+    @Transactional
     public void handleDeleteResult(String taskId, boolean ok, String rawMessage) {
         ProvisionTask task = repo.findByTaskId(taskId)
                 .orElseGet(() -> ProvisionTask.builder().taskId(taskId).build());
@@ -85,15 +85,15 @@ public class ProvisionPersistService {
 
         task.setErrorMessage(rawMessage);
 
-        final String payload = task.getInstanceFloatingPairs();
+        final String payload   = task.getInstanceFloatingPairs();
         final String instanceId = extractStr(payload, "delete_instance_id");
         final String projectId  = extractStr(payload, "destroy_project_id");
 
         if (ok) {
             task.setStatus(TaskStatus.DELETED);
             try {
+                // ================== CASE 1: DELETE 1 INSTANCE ==================
                 if (instanceId != null && !instanceId.isBlank()) {
-                    // --- XÓA 2 NAT PUBLIC CHO INSTANCE NÀY (nếu có đủ thông tin) ---
                     virtualDesktopService.findByIdInstanceOpt(instanceId).ifPresent(vd -> {
                         String wan = vd.getIpPublic();
                         String rdp = vd.getPortPublic();
@@ -120,12 +120,52 @@ public class ProvisionPersistService {
                         }
                     });
 
-
                     virtualDesktopService.deleteVirtualDesktopByIdInstance(instanceId);
                     log.info("[DeleteResult] DELETED instance {}, task {}", instanceId, taskId);
+
+                    // ================== CASE 2: DESTROY PROJECT/INFRA ==================
                 } else if (projectId != null && !projectId.isBlank()) {
-                    projectCascadeService.cascadeMarkProjectDeleted(projectId); // <<< đổi sang service mới
+
+                    // 2.1 XÓA NAT CHO TẤT CẢ VDI TRONG PROJECT
+                    try {
+                        var VDIs = virtualDesktopService.findAllByProject(projectId);
+                        for (var vd : VDIs) {
+                            String wan = vd.getIpPublic();
+                            String rdp = vd.getPortPublic();
+                            String win = vd.getPortWinRmPublic();
+
+                            if (wan == null || wan.isBlank()) continue;
+
+                            if (rdp != null && rdp.matches("\\d+")) {
+                                try {
+                                    boolean delRdp = ansible.runNatDelete(taskId + "_proj_rdp_" + vd.getId(), wan, Integer.parseInt(rdp));
+                                    log.info("[DeleteResult] [Project {}] NAT delete RDP {}:{} => {}",
+                                            projectId, wan, rdp, delRdp ? "OK" : "FAILED");
+                                } catch (Exception ex) {
+                                    log.warn("[DeleteResult] [Project {}] NAT delete RDP error for vd {}: {}",
+                                            projectId, vd.getId(), ex.getMessage());
+                                }
+                            }
+
+                            if (win != null && win.matches("\\d+")) {
+                                try {
+                                    boolean delWin = ansible.runNatDelete(taskId + "_proj_winrm_" + vd.getId(), wan, Integer.parseInt(win));
+                                    log.info("[DeleteResult] [Project {}] NAT delete WINRM {}:{} => {}",
+                                            projectId, wan, win, delWin ? "OK" : "FAILED");
+                                } catch (Exception ex) {
+                                    log.warn("[DeleteResult] [Project {}] NAT delete WINRM error for vd {}: {}",
+                                            projectId, vd.getId(), ex.getMessage());
+                                }
+                            }
+                        }
+                    } catch (Exception ex) {
+                        log.warn("[DeleteResult] NAT cleanup for project {} failed: {}", projectId, ex.getMessage());
+                    }
+
+                    // 2.2 CASCADE XÓA PROJECT + VDI + USER_PROJECT + RESET PASS
+                    projectCascadeService.cascadeMarkProjectDeleted(projectId);
                     log.info("[DeleteResult] DESTROYED project {}, task {}", projectId, taskId);
+
                 } else {
                     log.warn("[DeleteResult] task {} ok=true nhưng thiếu payload", taskId);
                 }
@@ -143,6 +183,7 @@ public class ProvisionPersistService {
     }
 
 
+
     private String extractStr(String json, String key) {
         if (json == null || json.isBlank()) return null;
         try {
@@ -153,44 +194,96 @@ public class ProvisionPersistService {
     }
 
 
-    /** SUCCESS: gom theo VM, chỉ set fixed_ip_v4 nếu có network "provider"; nếu không → null */
-
+    /**
+     * SUCCESS: parse theo 3 dạng response của OpenStack:
+     * - Có pfsense_config  (organization)
+     * - resources[].resource[] (add-resource)
+     * - resources[] thuần instance (personal)
+     */
     public void handleSuccess(InfraSuccessEvent event) {
-        log.info("aaaaaaaaaaaaaaaaaaaaaaaaa even: {}", event);
-        final String taskId = event.getIdentifier();
+        log.info("[InfraSuccess] parsed: {}", event);
 
+        final String taskId = event.getIdentifier();
         ProvisionTask task = repo.findByTaskId(taskId)
                 .orElseGet(() -> ProvisionTask.builder()
                         .taskId(taskId)
                         .status(TaskStatus.PROVISIONING)
                         .build());
 
-        // ✅ lấy fixed_ip_v4 đầu tiên từ pfsense_config.network (nếu có)
-        final String fixedFromPfSense = getFirstPfsenseFixedIp(event);
+        // ================== LẤY infraId ==================
+        String infraId = event.getInfraId();  // case personal / org
 
-        List<Map<String, Object>> machines = new ArrayList<>();
+        if (infraId == null && event.getResources() != null) {
+            // case add-resource: resources[].infra_id
+            infraId = event.getResources().stream()
+                    .map(InfraSuccessEvent.ResourceGroup::getInfraId)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+        }
+        task.setInfraId(infraId);
 
-        if (event.getCreatedResources() != null) {
-            event.getCreatedResources().stream()
-                    .filter(cr -> "openstack_compute_instance_v2".equals(cr.getType()))
-                    .filter(cr -> cr.getInstances() != null)
-                    .forEach(cr -> cr.getInstances().forEach(ins -> {
-                        if (ins.getAttributes() == null) return;
-                        var attr = ins.getAttributes();
+        // ================== PARSE INSTANCES ==================
+        List<Map<String, Object>> instances = new ArrayList<>();
 
-                        Map<String, Object> item = new LinkedHashMap<>();
-                        item.put("instance_id",   attr.getId());
-                        item.put("access_ip_v4",  attr.getAccessIpV4());  // IP trong attributes của VM
-                        item.put("fixed_ip_v4",   fixedFromPfSense);      // IP lấy từ pfsense_config.network[0].fixed_ip_v4 (nếu có)
-                        machines.add(item);
-                    }));
+        boolean hasPfSense = event.getPfsenseConfig() != null
+                && event.getPfsenseConfig().getNetwork() != null
+                && !event.getPfsenseConfig().getNetwork().isEmpty();
+
+        String orgPublicIp = hasPfSense ? extractOrgProviderIp(event.getPfsenseConfig()) : null;
+
+        if (event.getResources() != null) {
+            for (InfraSuccessEvent.ResourceGroup group : event.getResources()) {
+
+                // ---- 1) PERSONAL / ORG: resources[].instances[] ----
+                if ("openstack_compute_instance_v2".equals(group.getType())) {
+                    if (group.getInstances() != null) {
+                        for (InfraSuccessEvent.Instance ins : group.getInstances()) {
+                            InfraSuccessEvent.Attributes a = ins.getAttributes();
+                            if (a == null) continue;
+
+                            Map<String, Object> m = new LinkedHashMap<>();
+                            m.put("instance_id", a.getId());
+                            m.put("access_ip_v4", a.getAccessIpV4());
+                            m.put("fixed_ip_v4", hasPfSense ? orgPublicIp : null);
+                            if (hasPfSense) {
+                                m.put("networks", event.getPfsenseConfig().getNetwork());
+                            }
+                            instances.add(m);
+                        }
+                    }
+                }
+
+
+                // ---- 2) ADD-RESOURCE: resources[].resourceItems[].instances[] ----
+                if (group.getResourceItems() != null) {
+                    for (InfraSuccessEvent.ResourceItem item : group.getResourceItems()) {
+
+                        if (!"openstack_compute_instance_v2".equals(item.getType())) {
+                            continue; // BỎ block-volume / network / phụ
+                        }
+
+                        for (InfraSuccessEvent.Instance ins : item.getInstances()) {
+                            InfraSuccessEvent.Attributes a = ins.getAttributes();
+                            if (a == null) continue;
+
+                            Map<String, Object> m = new LinkedHashMap<>();
+                            m.put("instance_id", a.getId());
+                            m.put("access_ip_v4", a.getAccessIpV4());
+                            m.put("fixed_ip_v4", null); // add-resource không có public IP riêng
+                            instances.add(m);
+                        }
+                    }
+                }
+            }
         }
 
         try {
-            task.setInstanceFloatingPairs(om.writeValueAsString(machines));
-        } catch (JsonProcessingException e) {
-            throw new RuntimeException(e);
+            task.setInstanceFloatingPairs(om.writeValueAsString(instances));
+        } catch (Exception e) {
+            task.setInstanceFloatingPairs("[]");
         }
+
         task.setStatus(TaskStatus.SUCCESS);
         task.setErrorMessage(null);
         repo.save(task);
@@ -199,14 +292,13 @@ public class ProvisionPersistService {
         signalBus.complete(taskId, task);
     }
 
-    /** Lấy fixed_ip_v4 đầu tiên trong pfsense_config.network; không kiểm tra tên mạng */
-    private String getFirstPfsenseFixedIp(InfraSuccessEvent event) {
-        if (event == null || event.getPfsenseConfig() == null) return null;
-        var nets = event.getPfsenseConfig().getNetwork();
-        if (nets == null || nets.isEmpty()) return null;
+    /** Lấy public IP từ pfsense_config.network (mạng chứa EXTCLOUD_PROVIDER) */
+    private String extractOrgProviderIp(InfraSuccessEvent.PfsenseConfig cfg) {
+        if (cfg == null || cfg.getNetwork() == null) return null;
 
-        for (var n : nets) {
-            if (n != null && n.getFixedIpV4() != null && !n.getFixedIpV4().isBlank()) {
+        for (InfraSuccessEvent.PfsenseConfig.Net n : cfg.getNetwork()) {
+            String name = n.getName();
+            if (name != null && name.contains("EXTCLOUD_PROVIDER")) {
                 return n.getFixedIpV4();
             }
         }

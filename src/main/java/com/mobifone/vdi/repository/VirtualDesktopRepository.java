@@ -16,6 +16,15 @@ import java.util.Optional;
 @Repository
 public interface VirtualDesktopRepository extends JpaRepository<VirtualDesktop, String> {
 
+    Optional<VirtualDesktop> findFirstByProject_Id(String projectId);
+
+    Optional<VirtualDesktop> findFirstByProject_IdAndRegion(String projectId, String region);
+
+    Optional<VirtualDesktop> findFirstByUser_Id(String userId);
+
+    Optional<VirtualDesktop> findFirstByUser_IdAndRegion(String userId, String region);
+
+
     // ADDED: tìm DC của 1 project (có thể thêm filter region nếu bạn cần)
     Optional<VirtualDesktop> findFirstByProject_IdAndIsDomainControllerTrue(String projectId);
 

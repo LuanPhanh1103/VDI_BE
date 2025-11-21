@@ -6,6 +6,7 @@ import com.mobifone.vdi.common.Constants;
 import com.mobifone.vdi.dto.request.InstanceRequest;
 import com.mobifone.vdi.dto.request.NoVNCRequest;
 import com.mobifone.vdi.dto.response.*;
+import com.mobifone.vdi.entity.VirtualDesktop;
 import com.mobifone.vdi.entity.enumeration.TaskStatus;
 import com.mobifone.vdi.exception.AppException;
 import com.mobifone.vdi.exception.ErrorCode;
@@ -36,6 +37,8 @@ public class OpenStackService {
     ApiStrategyFactory strategyFactory;
     ObjectMapper objectMapper;
     ProvisionPersistService provisionPersistService;
+
+    VirtualDesktopService virtualDesktopService;
 
     // Parser phụ
     ObjectMapper om = new ObjectMapper();
@@ -103,17 +106,26 @@ public class OpenStackService {
     // Destroy toàn infra/project (nếu dùng)
     // =====================================================================
     @PreAuthorize("hasRole('delete_project')")
-    public InstanceResponse requestDestroyInfra(String ownerUserId, String projectId, String region) {
+    public InstanceResponse requestDestroyInfra(String ownerUserId, String projectId, String infraId, String region) {
+
         String taskId = UUID.randomUUID().toString();
+
+        // store infraId đúng chuẩn
         provisionPersistService.createDestroyingProject(taskId, projectId, ownerUserId);
 
-        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.DESTROY_INFRA)
-                .queryParam("identifier", taskId)
-                .queryParam("user_id", ownerUserId)
-                .build()
+        // tạo URL
+        String endpoint = UriComponentsBuilder
+                .fromPath(Constants.OPENSTACK.ENDPOINT.DESTROY_INFRA)
+                .buildAndExpand(infraId)
                 .toUriString();
 
-        String raw = strategy().callApi(HttpMethod.DELETE, endpoint, null, region);
+        String uri = UriComponentsBuilder.fromPath(endpoint)
+                .queryParam("identifier", taskId)
+                .queryParam("user_id", ownerUserId)
+                .toUriString();
+
+        // CHỈ cần gọi uri này, không gọi endpoint
+        String raw = strategy().callApi(HttpMethod.DELETE, uri, null, region);
 
         return InstanceResponse.builder()
                 .task_id(taskId)
@@ -128,11 +140,15 @@ public class OpenStackService {
     // =====================================================================
     @PreAuthorize("hasRole('delete_openstack')")
     public InstanceResponse requestDeleteInstance(String idInstance, String userId, String region) {
+        String infraId = virtualDesktopService.findByIdInstanceOpt(idInstance)
+                .map(VirtualDesktop::getInfraId)
+                .orElseThrow(() -> new AppException(ErrorCode.INSTANCE_NOT_FOUND_OR_NO_INFRA_ID));
+
         String taskId = UUID.randomUUID().toString();
         provisionPersistService.createDeleting(taskId, idInstance);
 
         String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.DELETE_RESOURCE)
-                .buildAndExpand(idInstance)
+                .buildAndExpand(infraId, idInstance)
                 .toUriString();
 
         String uriWithQuery = UriComponentsBuilder.fromPath(endpoint)
@@ -151,6 +167,7 @@ public class OpenStackService {
                 .build();
     }
 
+
     // =====================================================================
     // VOLUMES (lọc name bắt đầu bằng "bu_cloud") + phân trang
     // =====================================================================
@@ -164,7 +181,7 @@ public class OpenStackService {
             String json = strategy().callApi(HttpMethod.GET, endpoint, null, region);
 
             JsonNode root = om.readTree(json);
-            JsonNode arr = root.path("volumes");
+            JsonNode arr = root.path("data").path("volumes");
 
             List<VolumeSummary> all = new ArrayList<>();
             if (arr.isArray()) {
@@ -248,7 +265,7 @@ public class OpenStackService {
             String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null, region);
 
             JsonNode root = objectMapper.readTree(responseJson);
-            JsonNode flavorsNode = root.path("flavors");
+            JsonNode flavorsNode = root.path("data").path("flavors");
 
             List<FlavorsResponse> all = new ArrayList<>();
             if (flavorsNode.isArray()) {
@@ -361,6 +378,12 @@ public class OpenStackService {
         int count = Math.max(1, Math.toIntExact(Optional.ofNullable(req.getCount()).orElse(1L)));
         provisionPersistService.createProvisioning(taskId, count);
 
+        // ✅ LẤY infraId từ 1 VDI personal bất kỳ của user
+        String infraId = virtualDesktopService
+                .findAnyPersonalVDI(userId, region)
+                .map(VirtualDesktop::getInfraId)
+                .orElseThrow(() -> new AppException(ErrorCode.OPENSTACK_SERVICE_ADD_RESOURCE_PERSONAL));
+
         var body = new java.util.HashMap<String, Object>();
         body.put("base_vol_id", req.getBase_vol_id());
         body.put("vol_size",    req.getVol_size());
@@ -368,21 +391,30 @@ public class OpenStackService {
         body.put("vol_type",    req.getVol_type());
         body.put("count",       count);
 
-        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.ADD_RESOURCE_FOR_PERSONAL)
+        // ✅ /vdi/add_resource/{infraId}/personal
+        String endpoint = UriComponentsBuilder
+                .fromPath(Constants.OPENSTACK.ENDPOINT.ADD_RESOURCE_PERSONAL)
+                .buildAndExpand(infraId)
+                .toUriString();
+
+        // vẫn truyền identifier & user_id dạng query
+        String uriWithQuery = UriComponentsBuilder
+                .fromPath(endpoint)
                 .queryParam("identifier", taskId)
                 .queryParam("user_id", userId)
                 .build()
                 .toUriString();
 
-        String raw = strategy().callApi(HttpMethod.POST, endpoint, body, region);
+        String raw = strategy().callApi(HttpMethod.POST, uriWithQuery, body, region);
 
         return InstanceResponse.builder()
                 .task_id(taskId)
                 .status(TaskStatus.PROVISIONING.name())
-                .message("Infra is being provisioned (add_resource)")
+                .message("Infra is being provisioned (add_resource_personal)")
                 .raw(raw)
                 .build();
     }
+
 
     @PreAuthorize("hasRole('create_openstack_instance')")
     public InstanceResponse addResource(InstanceRequest req, String userId, String region) {
@@ -390,6 +422,13 @@ public class OpenStackService {
         int count = Math.max(1, Math.toIntExact(Optional.ofNullable(req.getCount()).orElse(1L)));
         provisionPersistService.createProvisioning(taskId, count);
 
+        // ✅ LẤY infraId từ 1 VDI bất kỳ trong project (dùng projectId trong InstanceRequest)
+        String projectId = req.getProjectId();
+        String infraId = virtualDesktopService
+                .findAnyByProject(projectId, region)
+                .map(VirtualDesktop::getInfraId)
+                .orElseThrow(() -> new AppException(ErrorCode.OPENSTACK_SERVICE_ADD_RESOURCE_ORG));
+
         var body = new java.util.HashMap<String, Object>();
         body.put("base_vol_id", req.getBase_vol_id());
         body.put("vol_size",    req.getVol_size());
@@ -397,21 +436,29 @@ public class OpenStackService {
         body.put("vol_type",    req.getVol_type());
         body.put("count",       count);
 
-        String endpoint = UriComponentsBuilder.fromPath(Constants.OPENSTACK.ENDPOINT.ADD_RESOURCE)
+        // ✅ /vdi/add_resource/{infraId}/organization
+        String endpoint = UriComponentsBuilder
+                .fromPath(Constants.OPENSTACK.ENDPOINT.ADD_RESOURCE_ORG)
+                .buildAndExpand(infraId)
+                .toUriString();
+
+        String uriWithQuery = UriComponentsBuilder
+                .fromPath(endpoint)
                 .queryParam("identifier", taskId)
                 .queryParam("user_id", userId)
                 .build()
                 .toUriString();
 
-        String raw = strategy().callApi(HttpMethod.POST, endpoint, body, region);
+        String raw = strategy().callApi(HttpMethod.POST, uriWithQuery, body, region);
 
         return InstanceResponse.builder()
                 .task_id(taskId)
                 .status(TaskStatus.PROVISIONING.name())
-                .message("Infra is being provisioned (add_resource)")
+                .message("Infra is being provisioned (add_resource_org)")
                 .raw(raw)
                 .build();
     }
+
 
     // =====================================================================
     // noVNC

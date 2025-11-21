@@ -75,9 +75,14 @@ public class InfraEventListener {
             String jsonCandidate = extractJson(cleaned);
             JsonNode jsonCandidateNode = jsonCandidate != null ? tryParseJsonStrict(jsonCandidate) : null;
 
-            // 2a) SUCCESS chuẩn: có "created_resources"
-            if (jsonCandidateNode != null && jsonCandidateNode.has("created_resources")) {
+            // 2a) SUCCESS nếu có "resources" hoặc có "pfsense_config"
+            boolean isSuccess =
+                    (jsonCandidateNode != null && jsonCandidateNode.has("resources"))
+                            || (jsonCandidateNode != null && jsonCandidateNode.has("pfsense_config"));
+
+            if (isSuccess) {
                 InfraSuccessEvent event = om.readValue(jsonCandidate, InfraSuccessEvent.class);
+
                 if (event.getIdentifier() != null) {
                     persistService.handleSuccess(event);
                     persistService.findEntity(event.getIdentifier())
@@ -85,6 +90,7 @@ public class InfraEventListener {
                 } else {
                     log.warn("Success event missing identifier");
                 }
+
                 channel.basicAck(tag, false);
                 return;
             }

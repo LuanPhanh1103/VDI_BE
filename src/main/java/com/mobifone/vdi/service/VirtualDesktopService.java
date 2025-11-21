@@ -211,4 +211,25 @@ public class VirtualDesktopService {
         return isPortPublicUsed(port) || isPortWinRmPublicUsed(port);
     }
 
+    @Transactional(readOnly = true)
+    public Optional<VirtualDesktop> findAnyByProject(String projectId, String region) {
+        if (region == null || region.isBlank())
+            return virtualDesktopRepository.findFirstByProject_Id(projectId);
+
+        return virtualDesktopRepository.findFirstByProject_IdAndRegion(projectId, region);
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<VirtualDesktop> findAnyPersonalVDI(String userId, String region) {
+        if (region == null || region.isBlank())
+            return virtualDesktopRepository.findFirstByUser_Id(userId);
+
+        return virtualDesktopRepository.findFirstByUser_IdAndRegion(userId, region);
+    }
+
+
+    @Transactional(readOnly = true)
+    public List<VirtualDesktop> findAllByProject(String projectId) {
+        return virtualDesktopRepository.findAllByProject_Id(projectId);
+    }
 }

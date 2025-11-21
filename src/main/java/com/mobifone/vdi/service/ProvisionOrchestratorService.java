@@ -19,19 +19,12 @@ import lombok.experimental.NonFinal;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.IntStream;
-
 
 import java.time.LocalDateTime;
 import java.util.*;
-import java.util.concurrent.Executor;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
 
 @Service
 @RequiredArgsConstructor
@@ -169,6 +162,12 @@ public class ProvisionOrchestratorService {
             return;
         }
 
+        final String infraId = infraTask.getInfraId();
+        if (infraId == null || infraId.isBlank()) {
+            throw stepError(jobId, "infraId missing from infra task");
+        }
+        logStep(jobId, null, "infra_id", "INFO", "infraId=" + infraId);
+
         // Parse instances: [{instance_id, access_ip_v4, fixed_ip_v4}]
         List<Map<String, Object>> instances;
         try {
@@ -189,8 +188,7 @@ public class ProvisionOrchestratorService {
         // THIẾT LẬP BIẾN DÙNG CHUNG & CHẠY SONG SONG (STAGGER 10s)
         // ===========================================================
         final String baseName = Optional.ofNullable(req.getName()).filter(s -> !s.isBlank()).orElse("vdi");
-        final boolean isOrgMode  = "organization".equalsIgnoreCase(mode);
-        final boolean isAddMode  = "add-resource".equalsIgnoreCase(mode);
+
         final boolean planHasDC  = planHasDomainController(req);
         final Optional<String> domainFromPlan = extractDomainNameFromPlan(req);
 
@@ -201,9 +199,9 @@ public class ProvisionOrchestratorService {
                         Executor delayedVexec = CompletableFuture.delayedExecutor(delaySec, TimeUnit.SECONDS, vexec);
                         return CompletableFuture.runAsync(() -> processOneInstance(
                                 idx, instances, baseName,
-                                isOrgMode, isAddMode, planHasDC, domainFromPlan,
+                                mode, planHasDC, domainFromPlan,
                                 jobId, req, usernameOfVdi, osRegion,
-                                success, failed
+                                success, failed, infraId
                         ), delayedVexec);
                     })
                     .toArray(CompletableFuture[]::new);
@@ -222,12 +220,26 @@ public class ProvisionOrchestratorService {
         jobRepo.save(job);
     }
 
+    private String extractOrgProviderIp(Map<String, Object> inst) {
+        Object netsRaw = inst.get("networks");
+        if (!(netsRaw instanceof List<?> nets)) return null;
+
+        for (Object o : nets) {
+            if (o instanceof Map<?, ?> n) {
+                String name = Objects.toString(n.get("name"), "");
+                if (name.contains("EXTCLOUD_PROVIDER")) {
+                    return Objects.toString(n.get("fixed_ip_v4"), null);
+                }
+            }
+        }
+        return null;
+    }
+
     private void processOneInstance(
             int i,
             List<Map<String, Object>> instances,
             String baseName,
-            boolean isOrgMode,
-            boolean isAddMode,
+            String mode,
             boolean planHasDC,
             Optional<String> domainFromPlan,
             String jobId,
@@ -235,14 +247,33 @@ public class ProvisionOrchestratorService {
             String usernameOfVdi,
             String osRegion,
             AtomicInteger success,
-            AtomicInteger failed
+            AtomicInteger failed,
+            String infraId
     ) {
         final Map<String, Object> inst = instances.get(i);
         final String vdName = (instances.size() == 1) ? baseName : baseName + "-" + (i + 1);
 
         final String instanceId = String.valueOf(inst.get("instance_id"));
         final String ipLocal    = String.valueOf(inst.get("access_ip_v4"));
-        final String ipPublic   = inst.get("fixed_ip_v4") == null ? null : String.valueOf(inst.get("fixed_ip_v4"));
+        String ipPublic   = inst.get("fixed_ip_v4") == null ? null : String.valueOf(inst.get("fixed_ip_v4"));
+
+        if ("personal".equalsIgnoreCase(mode)) {
+            ipPublic = "42.1.65.60";
+        } else if ("add-resource-for-personal".equalsIgnoreCase(mode)) {
+            // Lấy infraId từ task → tìm VDI personal đầu tiên trong DB
+            VirtualDesktop vdp = virtualDesktopService.findAnyPersonalVDI(req.getUserId(), osRegion)
+                    .orElseThrow(() -> new AppException(ErrorCode.ORCHESTRATOR_SERVICE_IP_PUBLIC_PERSONAL));
+            ipPublic = vdp.getIpPublic(); // dùng cùng 42.x.x.x
+        } else if ("organization".equalsIgnoreCase(mode)) {
+            ipPublic = extractOrgProviderIp(inst); // hàm viết bên dưới
+        } else if ("add-resource".equalsIgnoreCase(mode)) {
+            VirtualDesktop vdo = virtualDesktopService.findAnyByProject(req.getProjectId(), osRegion)
+                    .orElseThrow(() -> new AppException(ErrorCode.ORCHESTRATOR_SERVICE_IP_PUBLIC_ORG));
+            ipPublic = vdo.getIpPublic();
+        }
+
+        final boolean isOrgMode  = "organization".equalsIgnoreCase(mode);
+        final boolean isAddMode  = "add-resource".equalsIgnoreCase(mode);
 
         VirtualDesktop vd = null;
 
@@ -253,7 +284,7 @@ public class ProvisionOrchestratorService {
             int rdpPortPublic   = portAllocator.allocateUnique();
             int winRmPortPublic = portAllocator.allocateUnique();
 
-            vd = buildVD(jobId, vdName, req, ipLocal, ipPublic, rdpPortPublic, instanceId, osRegion);
+            vd = buildVD(jobId, vdName, req, ipLocal, ipPublic, rdpPortPublic, instanceId, osRegion, infraId);
             vd.setPortWinRmPublic(String.valueOf(winRmPortPublic));
 
             if (isOrgMode && planHasDC) {
@@ -481,6 +512,8 @@ public class ProvisionOrchestratorService {
                 return;
             }
 
+
+
             // Mặc định
             vd.setStatus("READY");
             virtualDesktopService.save(vd);
@@ -671,11 +704,14 @@ public class ProvisionOrchestratorService {
         ir.setVol_size(req.getVol_size());
         ir.setFlavor_id(req.getFlavor_id());
         ir.setCount(req.getCount());
+        ir.setProjectId(req.getProjectId());
         return ir;
     }
 
     private VirtualDesktop buildVD(String jobId, String name, ProvisionAndConfigureRequest req,
-                                   String ipLocal, String ipPublic, int portPublic, String instanceId, String region) {
+                                   String ipLocal, String ipPublic, int portPublic,
+                                   String instanceId, String region, String infraId)
+    {
         VirtualDesktop vd = new VirtualDesktop();
         vd.setName(name);
         vd.setIpLocal(ipLocal);
@@ -698,6 +734,7 @@ public class ProvisionOrchestratorService {
         vd.setWinRmDisabled(false);
         vd.setJobId(jobId);
         vd.setIdInstance(instanceId);
+        vd.setInfraId(infraId);
 
         vd.setUser(userService.findUserById(req.getUserId()));
         vd.setProject(projectService.loadEntity(req.getProjectId())); // <<< lấy entity qua service
@@ -726,20 +763,6 @@ public class ProvisionOrchestratorService {
         } catch (Exception ignore) {}
 
         return vd;
-    }
-
-    private String pickWinVersion(ProvisionAndConfigureRequest req) {
-        if (req.getApps() != null) {
-            for (AppPlanRequest p : req.getApps()) {
-                if (p.getWinVersion() != null && !p.getWinVersion().isBlank()) {
-                    return p.getWinVersion();
-                }
-            }
-        }
-        if (req.getWinVersion() != null && !req.getWinVersion().isBlank()) {
-            return req.getWinVersion();
-        }
-        return "2022";
     }
 
     private void logStep(String jobId, String vdId, String step, String status, String detail) {
