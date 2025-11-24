@@ -28,18 +28,18 @@ public class ProjectCascadeService {
         Project project = projectRepo.findById(projectId)
                 .orElseThrow(() -> new AppException(ErrorCode.PROJECT_NOT_EXISTED));
 
-        // 1) Project
-        project.setIsDeleted(1L);
-        projectRepo.save(project);
-
-        // 2) VDI
+        //  1) XÓA VDI TRƯỚC
         virtualDesktopService.markAllDeletedByProject(projectId);
 
-        // 3) user_project
+        //  2) XÓA user_project TRƯỚC
         userProjectService.softDeleteAllByProject(projectId);
 
-        // 4) users thuộc project -> password = "1"
+        //  3) RESET PASSWORD USER TRONG PROJECT TRƯỚC
         userService.resetPasswordsForUsersInProject(projectId);
+
+        //  4) CUỐI CÙNG MỚI XÓA PROJECT
+        project.setIsDeleted(1L);
+        projectRepo.save(project);
 
         log.info("[Cascade] Marked project {} and related entities deleted", projectId);
     }
