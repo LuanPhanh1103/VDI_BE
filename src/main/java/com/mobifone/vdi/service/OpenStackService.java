@@ -474,19 +474,38 @@ public class OpenStackService {
             String responseJson = strategy().callApi(HttpMethod.GET, endpoint, null, region);
 
             JsonNode root = objectMapper.readTree(responseJson);
-            String url = root.path("console").path("url").asText();
-            if (url == null || url.isEmpty()) throw new AppException(ErrorCode.API_VNC_ERR);
 
-            // ✅ Hậu xử lý URL
+            // ---- LẤY URL THEO RESPONSE MỚI ----
+            String url = root
+                    .path("data")
+                    .path("console")
+                    .path("url")
+                    .asText(null);
+
+            if (url == null || url.isBlank()) {
+                log.error("Invalid VNC response: {}", responseJson);
+                throw new AppException(ErrorCode.API_VNC_ERR);
+            }
+
+            // ---- REWRITE URL ----
             try {
                 java.net.URI original = new java.net.URI(url);
+
+                // Chỉ lấy path + query
+                String rawPath = original.getRawPath();
+                String rawQuery = original.getRawQuery();
+                String fullPath = rawPath + (rawQuery != null ? "?" + rawQuery : "");
+
                 String newUrl = String.format(
                         "https://cloud.mobifone.vn:%d/hn02%s",
                         original.getPort(),
-                        original.getRawPath() + (original.getRawQuery() != null ? "?" + original.getRawQuery() : "")
+                        fullPath
                 );
 
-                return NoVNCResponse.builder().url(newUrl).build();
+                return NoVNCResponse.builder()
+                        .url(newUrl)
+                        .build();
+
             } catch (Exception ex) {
                 log.error("Failed to rewrite noVNC URL {}: {}", url, ex.getMessage());
                 throw new AppException(ErrorCode.API_VNC_ERR);
@@ -497,5 +516,6 @@ public class OpenStackService {
             throw new AppException(ErrorCode.API_VNC_ERR);
         }
     }
+
 
 }
